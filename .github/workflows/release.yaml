@@ -43,15 +43,17 @@ jobs:
     steps:
       - name: Get Functions
         id: functions
-        shell: bash
         run: |
-          FUNCTIONS="${{ github.event_name == 'workflow_dispatch' && inputs.function || '' }}"
-          if [ "$github.event_name" == "workflow_dispatch" ]; then
-            FUNCTIONS="$inputs.function"
-          elif [ -n "$changed_files" ]; then
-            FUNCTIONS=$(echo $changed_files | jq -r '. | join(" ")')
+          if [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
+            echo "functions=$(echo '${{ inputs.function }}' | jq -R . | jq -s .)" >> $GITHUB_OUTPUT
+          else
+            CHANGED="${{ needs.prepare.outputs.changed-files }}"
+            if [ "$CHANGED" != "[]" ]; then
+              echo "functions=$CHANGED" >> $GITHUB_OUTPUT
+            else
+              echo "functions=[]" >> $GITHUB_OUTPUT
+            fi
           fi
-          echo "$FUNCTIONS"
 
   build:
     if: ${{ needs.changed.outputs.functions != '[]' }}
