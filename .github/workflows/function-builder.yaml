@@ -19,7 +19,7 @@ jobs:
     name: Prepare
     runs-on: ubuntu-latest
     outputs:
-      function-exists: ${{ steps.function-options.outputs.function-exists }}
+      function-exists: ${{ steps.function-exists.outputs.exists }}
       environment: ${{ steps.function-options.outputs.environment }}
       language: ${{ steps.function-options.outputs.language }}
       runtime: ${{ steps.function-options.outputs.runtime }}
