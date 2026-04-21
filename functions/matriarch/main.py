@@ -42,9 +42,9 @@ class KomgaAPIClient:
                 params={"search": series_name},
             )
             response.raise_for_status()
-            series_list = response.json()
+            series_list = response.json().get("content", [])
 
-            if not series_list or len(series_list) == 0:
+            if not series_list:
                 logger.error(f"Series not found: {series_name}")
                 return None
 
@@ -64,7 +64,7 @@ class KomgaAPIClient:
                 f"{self.api_url}/api/v1/series/{series_id}/books", headers=self.headers
             )
             response.raise_for_status()
-            books = response.json()
+            books = response.json().get("content", [])
 
             chapters = []
             for book in books:
