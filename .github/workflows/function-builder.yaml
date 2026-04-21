@@ -95,7 +95,7 @@ jobs:
 
       - name: Setup Python
         if: needs.prepare.outputs.runtime == 'python'
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359f38c75c6ac13ef # v5.3.0
+        uses: actions/setup-python@v5.3.0
         with:
           python-version: ${{ env.python-version }}
           cache: pip
@@ -103,7 +103,7 @@ jobs:
 
       - name: Setup Node.js
         if: needs.prepare.outputs.runtime == 'nodejs'
-        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        uses: actions/setup-node@v4.1.0
         with:
           node-version: ${{ env.node-version }}
           cache: npm
@@ -111,7 +111,7 @@ jobs:
 
       - name: Setup Go
         if: needs.prepare.outputs.runtime == 'go'
-        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4b1 # v5.2.0
+        uses: actions/setup-go@v5.2.0
         with:
           go-version: ${{ env.go-version }}
           cache: true
