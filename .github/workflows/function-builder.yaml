@@ -78,17 +78,17 @@ jobs:
           case "${{ needs.prepare.outputs.runtime }}" in
             python*)
               echo "Setting up Python environment..."
-              python_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^python[0-9.]+$' || echo "3.11")
+              python_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || echo "3.11")
               echo "python-version=${python_version}" >> $GITHUB_ENV
               ;;
             node*)
               echo "Setting up Node.js environment..."
-              node_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^node[0-9]+$' || echo "20")
+              node_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -oE '[0-9]+' | head -1 || echo "20")
               echo "node-version=${node_version}" >> $GITHUB_ENV
               ;;
             go*)
               echo "Setting up Go environment..."
-              go_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^go[0-9.]+$' || echo "1.21")
+              go_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || echo "1.21")
               echo "go-version=${go_version}" >> $GITHUB_ENV
               ;;
           esac
