@@ -1,7 +1,7 @@
 ---
 # yaml-language-server: $schema=https://json.schemastore.org/github-action.json
 name: Function Options
-description: Takes a function and returns various fields from its .fission/config.yaml file
+description: Takes a function and returns various fields from its config.yaml file
 
 inputs:
   function:
@@ -31,16 +31,16 @@ runs:
       working-directory: ./functions/${{ inputs.function }}
       run: |
         ENVIRONMENT=$(\
-            yq -r '.environment' .fission/config.yaml \
+            yq -r '.environment' config.yaml \
         )
         RUNTIME=$(\
-            yq -r '.runtime' .fission/config.yaml \
+            yq -r '.runtime' config.yaml \
         )
         SOURCE=$(\
-            yq -r '.source' .fission/config.yaml \
+            yq -r '.source' config.yaml \
         )
         VERSION=$(\
-            yq -r '.version' .fission/config.yaml \
+            yq -r '.version' config.yaml \
         )
 
         echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
