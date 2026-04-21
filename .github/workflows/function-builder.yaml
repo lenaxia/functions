@@ -1,0 +1,238 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Function Builder
+
+on:
+  workflow_call:
+    inputs:
+      function:
+        type: string
+        description: Function Name
+        required: true
+      release:
+        type: boolean
+        description: Release
+        required: true
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      function-exists: ${{ steps.function-exists.outputs.exists }}
+      environment: ${{ steps.function-options.outputs.environment }}
+      runtime: ${{ steps.function-options.outputs.runtime }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check For Existing Function
+        id: function-exists
+        shell: bash
+        run: |
+          if [ -d "./functions/${{ inputs.function }}" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Function Options
+        id: function-options
+        uses: ./.github/actions/function-options
+        with:
+          function: ${{ inputs.function }}
+
+      - name: Get Function Versions
+        uses: ./.github/actions/function-versions
+        id: function-versions
+        with:
+          upstream-version: ${{ steps.function-options.outputs.version }}
+
+  build:
+    name: Build
+    needs: ["prepare"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get Function Options
+        id: function-options
+        uses: ./.github/actions/function-options
+        with:
+          function: ${{ inputs.function }}
+
+      - name: Get Function Versions
+        uses: ./.github/actions/function-versions
+        id: function-versions
+        with:
+          upstream-version: ${{ steps.function-options.outputs.version }}
+
+      - name: Setup Environment
+        shell: bash
+        run: |
+          case "${{ needs.prepare.outputs.runtime }}" in
+            "python")
+              echo "Setting up Python environment..."
+              python_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^python[0-9.]+$' || echo "3.11")
+              echo "python-version=${python_version}" >> $GITHUB_ENV
+              ;;
+            "nodejs")
+              echo "Setting up Node.js environment..."
+              node_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^node[0-9]+$' || echo "20")
+              echo "node-version=${node_version}" >> $GITHUB_ENV
+              ;;
+            "go")
+              echo "Setting up Go environment..."
+              go_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^go[0-9.]+$' || echo "1.21")
+              echo "go-version=${go_version}" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: Setup Python
+        if: needs.prepare.outputs.runtime == 'python'
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359f38c75c6ac13ef # v5.3.0
+        with:
+          python-version: ${{ env.python-version }}
+          cache: pip
+          cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
+
+      - name: Setup Node.js
+        if: needs.prepare.outputs.runtime == 'nodejs'
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: ${{ env.node-version }}
+          cache: npm
+          cache-dependency-path: ./functions/${{ inputs.function }}/package.json
+
+      - name: Setup Go
+        if: needs.prepare.outputs.runtime == 'go'
+        uses: actions/setup-go@0c52d547c9bc32b1aa3301fd7a9cb496313a4b1 # v5.2.0
+        with:
+          go-version: ${{ env.go-version }}
+          cache: true
+          cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
+
+      - name: Install Dependencies (Python)
+        if: needs.prepare.outputs.runtime == 'python' && hashFiles('./functions/${{ inputs.function }}/requirements.txt') != ''
+        shell: bash
+        run: |
+          pip install --requirement ./functions/${{ inputs.function }}/requirements.txt --target ./functions/${{ inputs.function }}/.fission/deps
+
+      - name: Install Dependencies (Node.js)
+        if: needs.prepare.outputs.runtime == 'nodejs' && hashFiles('./functions/${{ inputs.function }}/package.json') != ''
+        shell: bash
+        run: |
+          cd ./functions/${{ inputs.function }}
+          npm ci --production
+          mkdir -p .fission/deps
+          mv node_modules/* .fission/deps/
+
+      - name: Install Dependencies (Go)
+        if: needs.prepare.outputs.runtime == 'go' && hashFiles('./functions/${{ inputs.function }}/go.mod') != ''
+        shell: bash
+        run: |
+          cd ./functions/${{ inputs.function }}
+          mkdir -p .fission/deps
+          go mod download -modcacherw
+          cp -r $GOPATH/pkg/mod/* .fission/deps/ || true
+
+      - name: Add Include Directory
+        shell: bash
+        run: |
+          if [ -d "./include" ]; then
+            rsync -a --ignore-existing ./include/ ./functions/${{ inputs.function }}/
+          fi
+
+      - name: Package Function
+        shell: bash
+        run: |
+          cd ./functions/${{ inputs.function }}
+          zip -r ../${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip \
+            --exclude='.fission/*' \
+            --exclude='.git/*' \
+            --exclude='__pycache__/*' \
+            --exclude='*.pyc' \
+            --exclude='node_modules/*' \
+            --exclude='.gitignore' \
+            --exclude='tests/*' \
+            . || true
+
+      - name: Upload Function Package
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: ${{ inputs.function }}-package
+          path: functions/${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip
+          retention-days: 1
+
+      - if: ${{ ! inputs.release }}
+        name: Run Function Tests
+        uses: ./.github/actions/function-tests
+        with:
+          function: ${{ inputs.function }}
+          runtime: ${{ needs.prepare.outputs.runtime }}
+
+      - if: ${{ inputs.release }}
+        name: Upload Release Asset
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: ${{ inputs.function }}-release-asset
+          path: functions/${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip
+          retention-days: 1
+
+  release:
+    if: ${{ inputs.release && needs.prepare.outputs.function-exists != 'true' }}
+    name: Release
+    needs: ["prepare", "build"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate Token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        id: app-token
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Get Function Options
+        id: function-options
+        uses: ./.github/actions/function-options
+        with:
+          function: ${{ inputs.function }}
+
+      - name: Get Release Tag
+        uses: ./.github/actions/release-tag
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Download Release Asset
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ${{ inputs.function }}-release-asset
+          path: ${{ runner.temp }}
+
+      - name: Create Release
+        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
+        with:
+          body: |
+            > [!NOTE]
+            > A new function has been added.
+
+            ## 📦 Function
+
+            **Name**: ${{ inputs.function }}
+            **Environment**: ${{ needs.prepare.outputs.environment }}
+            **Runtime**: ${{ needs.prepare.outputs.runtime }}
+            **Source**: <${{ steps.function-options.outputs.source }}>
+          tag: ${{ steps.release.outputs.tag }}
+          token: ${{ steps.app-token.outputs.token }}
+          artifacts: ${{ runner.temp }}/${{ inputs.function }}-*.zip

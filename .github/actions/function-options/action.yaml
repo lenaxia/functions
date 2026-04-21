@@ -1,0 +1,49 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+name: Function Options
+description: Takes a function and returns various fields from its .fission/config.yaml file
+
+inputs:
+  function:
+    description: Function Name
+    required: true
+
+outputs:
+  environment:
+    description: Environment
+    value: ${{ steps.options.outputs.environment }}
+  runtime:
+    description: Runtime
+    value: ${{ steps.options.outputs.runtime }}
+  source:
+    description: Source
+    value: ${{ steps.options.outputs.source }}
+  version:
+    description: Version
+    value: ${{ steps.options.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Function Options
+      id: options
+      shell: bash
+      working-directory: ./functions/${{ inputs.function }}
+      run: |
+        ENVIRONMENT=$(\
+            yq --raw-output '.environment' .fission/config.yaml \
+        )
+        RUNTIME=$(\
+            yq --raw-output '.runtime' .fission/config.yaml \
+        )
+        SOURCE=$(\
+            yq --raw-output '.source' .fission/config.yaml \
+        )
+        VERSION=$(\
+            yq --raw-output '.version' .fission/config.yaml \
+        )
+
+        echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+        echo "runtime=${RUNTIME}" >> $GITHUB_OUTPUT
+        echo "source=${SOURCE}" >> $GITHUB_OUTPUT
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT

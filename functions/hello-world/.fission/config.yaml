@@ -1,0 +1,4 @@
+environment: python
+runtime: python311
+version: "1.0.0"
+source: https://github.com/example/functions

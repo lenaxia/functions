@@ -1,0 +1,109 @@
+---
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+set: [pipefail]
+shopt: [globstar]
+
+vars:
+  BIN_DIR: '{{.ROOT_DIR}}/.bin'
+
+tasks:
+  default:
+    cmd: task --list
+    silent: true
+
+  init:
+    desc: Initialize the project
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+    preconditions:
+      - which yq
+
+  local-build-*:
+    desc: Build and test a function locally
+    dir: '{{.WORK_DIR}}'
+    cmds:
+      - rsync -a --ignore-existing --progress {{.ROOT_DIR}}/include/ {{.WORK_DIR}}
+      - rsync -a --ignore-existing --progress {{.ROOT_DIR}}/functions/{{.FUNCTION}}/ {{.WORK_DIR}}
+      - |
+        case "{{.RUNTIME}}" in
+          "python")
+            if [ -f "requirements.txt" ]; then
+              pip install --requirement requirements.txt --target .fission/deps
+            fi
+            if [ -f "requirements-test.txt" ]; then
+              pip install --requirement requirements-test.txt
+            fi
+            if [ -d "tests" ]; then
+              pytest tests/ -v || true
+            fi
+            ;;
+          "nodejs")
+            if [ -f "package.json" ]; then
+              npm install --production
+              mkdir -p .fission/deps
+              mv node_modules/* .fission/deps/
+            fi
+            if grep -q '"test"' package.json; then
+              npm test || true
+            fi
+            ;;
+          "go")
+            if [ -f "go.mod" ]; then
+              mkdir -p .fission/deps
+              go mod download -modcacherw
+              cp -r $GOPATH/pkg/mod/* .fission/deps/ || true
+            fi
+            go test ./... || true
+            ;;
+        esac
+      - |
+        VERSION=$(yq --raw-output '.version' .fission/config.yaml)
+        zip -r {{.ROOT_DIR}}/{{.FUNCTION}}-${VERSION}.zip \
+          --exclude='.fission/*' \
+          --exclude='.git/*' \
+          --exclude='__pycache__/*' \
+          --exclude='*.pyc' \
+          --exclude='node_modules/*' \
+          --exclude='.gitignore' \
+          --exclude='tests/*' \
+          . \
+        && echo "Function packaged: {{.ROOT_DIR}}/{{.FUNCTION}}-${VERSION}.zip"
+      - rm -rf {{.WORK_DIR}}
+    vars:
+      FUNCTION: '{{index .MATCH 0}}'
+      RUNTIME:
+        sh: yq --raw-output '.runtime' {{.ROOT_DIR}}/functions/{{.FUNCTION}}/.fission/config.yaml
+      WORK_DIR:
+        sh: mktemp -d
+    preconditions:
+      - test -f {{.ROOT_DIR}}/functions/{{.FUNCTION}}/.fission/config.yaml
+      - which yq zip
+
+  remote-build-*:
+    desc: Build and test a function via GitHub Actions
+    cmds:
+      - gh workflow run release.yaml -f function={{.FUNCTION}} -f release={{.RELEASE}}
+    vars:
+      FUNCTION: '{{index .MATCH 0}}'
+      RELEASE: '{{.RELEASE | default "false"}}'
+    preconditions:
+      - gh auth status
+      - test -f {{.ROOT_DIR}}/.github/workflows/release.yaml
+      - which gh
+
+  generate-label-config:
+    desc: Generate labels and labeler config
+    cmds:
+      - for: { var: functions }
+        cmd: |
+          yq --inplace '. += [{"name": "function/{{.ITEM}}", "color": "027fa0"}]' {{.ROOT_DIR}}/.github/labels.yaml
+      - for: { var: functions }
+        cmd: |
+          yq --inplace '. += {"function/{{.ITEM}}": [{"changed-files": [{"any-glob-to-any-file": ["functions/{{.ITEM}}/**"]}]}]}' {{.ROOT_DIR}}/.github/labeler.yaml
+    vars:
+      functions:
+        sh: ls --directory {{.ROOT_DIR}}/functions/*/ | xargs --max-args=1 basename
+    preconditions:
+      - sh: '[[ -z {{.CLI_FORCE}} ]]'
