@@ -257,7 +257,7 @@ class ScratchFileManager:
             return False
 
 
-def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+def main() -> Dict[str, Any]:
     """
     Main handler for Fission function
 
