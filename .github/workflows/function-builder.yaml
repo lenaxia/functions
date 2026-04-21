@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           if [ -f "./functions/${{ inputs.function }}/requirements.txt" ]; then
-            pip install --requirement ./functions/${{ inputs.function }}/requirements.txt --target ./functions/${{ inputs.function }}/.fission/deps
+            pip install --requirement ./functions/${{ inputs.function }}/requirements.txt --target ./functions/${{ inputs.function }}
           fi
 
       - name: Install Dependencies (Node.js)

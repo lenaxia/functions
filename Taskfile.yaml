@@ -30,7 +30,7 @@ tasks:
         case "{{.LANGUAGE}}" in
           python*)
             if [ -f "requirements.txt" ]; then
-              pip install --requirement requirements.txt --target .fission/deps
+            pip install --requirement requirements.txt --target .
             fi
             if [ -f "requirements-test.txt" ]; then
               pip install --requirement requirements-test.txt
