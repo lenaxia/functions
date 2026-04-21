@@ -200,13 +200,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Generate Token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
-        id: app-token
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-
       - name: Get Function Options
         id: function-options
         uses: ./.github/actions/function-options
@@ -217,7 +210,7 @@ jobs:
         uses: ./.github/actions/release-tag
         id: release
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
 
       - name: Download Release Asset
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -239,5 +232,5 @@ jobs:
             **Runtime**: ${{ needs.prepare.outputs.runtime }}
             **Source**: <${{ steps.function-options.outputs.source }}>
           tag: ${{ steps.release.outputs.tag }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           artifacts: ${{ runner.temp }}/${{ inputs.function }}-*.zip
