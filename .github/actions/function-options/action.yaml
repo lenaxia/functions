@@ -31,16 +31,16 @@ runs:
       working-directory: ./functions/${{ inputs.function }}
       run: |
         ENVIRONMENT=$(\
-            yq --raw-output '.environment' .fission/config.yaml \
+            yq -r '.environment' .fission/config.yaml \
         )
         RUNTIME=$(\
-            yq --raw-output '.runtime' .fission/config.yaml \
+            yq -r '.runtime' .fission/config.yaml \
         )
         SOURCE=$(\
-            yq --raw-output '.source' .fission/config.yaml \
+            yq -r '.source' .fission/config.yaml \
         )
         VERSION=$(\
-            yq --raw-output '.version' .fission/config.yaml \
+            yq -r '.version' .fission/config.yaml \
         )
 
         echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT

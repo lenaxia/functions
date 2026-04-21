@@ -59,7 +59,7 @@ tasks:
             ;;
         esac
       - |
-        VERSION=$(yq --raw-output '.version' .fission/config.yaml)
+        VERSION=$(yq -r '.version' .fission/config.yaml)
         zip -r {{.ROOT_DIR}}/{{.FUNCTION}}-${VERSION}.zip \
           --exclude='.fission/*' \
           --exclude='.git/*' \
@@ -74,7 +74,7 @@ tasks:
     vars:
       FUNCTION: '{{index .MATCH 0}}'
       RUNTIME:
-        sh: yq --raw-output '.runtime' {{.ROOT_DIR}}/functions/{{.FUNCTION}}/.fission/config.yaml
+        sh: yq -r '.runtime' {{.ROOT_DIR}}/functions/{{.FUNCTION}}/.fission/config.yaml
       WORK_DIR:
         sh: mktemp -d
     preconditions:
