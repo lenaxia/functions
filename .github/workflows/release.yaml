@@ -42,17 +42,16 @@ jobs:
       functions: ${{ steps.functions.outputs.functions }}
     steps:
       - name: Get Functions
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         id: functions
-        env:
-          FUNCTIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.function || join(fromJSON(needs.prepare.outputs.changed-files), ' ') }}
-        with:
-          script: |
-            const { FUNCTIONS } = process.env;
-            const functionsToBuild = FUNCTIONS.split(' ').filter(Boolean);
-            core.setOutput('functions', JSON.stringify(functionsToBuild));
-            console.log('functions:', JSON.stringify(functionsToBuild, null, 2));
-            core.summary.addHeading('Functions to build:').addList(functionsToBuild).write();
+        shell: bash
+        run: |
+          FUNCTIONS="${{ github.event_name == 'workflow_dispatch' && inputs.function || '' }}"
+          if [ "$github.event_name" == "workflow_dispatch" ]; then
+            FUNCTIONS="$inputs.function"
+          elif [ -n "$changed_files" ]; then
+            FUNCTIONS=$(echo $changed_files | jq -r '. | join(" ")')
+          fi
+          echo "$FUNCTIONS"
 
   build:
     if: ${{ needs.changed.outputs.functions != '[]' }}
