@@ -45,7 +45,7 @@ jobs:
         id: functions
         run: |
           if [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
-            echo "functions=$(echo '${{ inputs.function }}' | jq -R . | jq -s .)" >> $GITHUB_OUTPUT
+            echo 'functions=["${{ inputs.function }}"]' >> $GITHUB_OUTPUT
           else
             CHANGED="${{ needs.prepare.outputs.changed-files }}"
             if [ "$CHANGED" != "[]" ]; then
