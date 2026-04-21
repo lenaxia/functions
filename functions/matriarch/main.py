@@ -13,6 +13,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _secret(name: str, default: str = "") -> str:
+    """Read from Fission secret mount, fall back to env var."""
+    path = Path(f"/secrets/fission/matriarch/{name}")
+    if path.exists():
+        return path.read_text().strip()
+    return os.getenv(name, default)
+
+
 class KomgaAPIClient:
     """Handle all Komga API interactions"""
 
@@ -267,20 +275,22 @@ def main() -> Dict[str, Any]:
     Returns:
         Dictionary with response data
     """
-    scratch_base_path = os.getenv("SCRATCH_PATH", "/mnt/scratch")
+    scratch_base_path = _secret("SCRATCH_PATH") or "/mnt/scratch"
     scratch_path = Path(scratch_base_path) / "matriarch"
-    series_name = os.getenv("SERIES_NAME", "I'll Be The Matriarch In This Life")
-    komga_api_url = os.getenv(
-        "KOMGA_API_URL", "http://komga.media.svc.cluster.local:8080"
+    series_name = _secret("SERIES_NAME") or "I'll Be The Matriarch In This Life"
+    komga_api_url = (
+        _secret("KOMGA_API_URL") or "http://komga.media.svc.cluster.local:8080"
     )
-    komga_api_key = os.getenv("KOMGA_API_KEY", "")
-    library_id = os.getenv("KOMGA_LIBRARY_ID", "")
-    violet_url = os.getenv(
-        "VIOLET_URL",
-        "https://violetscans.org/comics/ill-be-the-matriarch-in-this-life/",
+    komga_api_key = _secret("KOMGA_API_KEY")
+    library_id = _secret("KOMGA_LIBRARY_ID")
+    violet_url = (
+        _secret("VIOLET_URL")
+        or "https://violetscans.org/comics/ill-be-the-matriarch-in-this-life/"
     )
-    dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
-    test_mode = os.getenv("TEST_MODE", "false").lower() == "true"
+    dry_run = (_secret("DRY_RUN") or os.getenv("DRY_RUN", "false")).lower() == "true"
+    test_mode = (
+        _secret("TEST_MODE") or os.getenv("TEST_MODE", "false")
+    ).lower() == "true"
 
     logger.info(f"Starting Matriarch update workflow")
     logger.info(f"Series: {series_name}")
