@@ -1,45 +1,48 @@
 ---
 # yaml-language-server: $schema=https://json.schemastore.org/github-action.json
 name: Function Tests
-description: Tests a Fission function based on its runtime
+description: Tests a Fission function based on its language and runtime version
 
 inputs:
   function:
     description: Function Name
     required: true
+  language:
+    description: Programming language (python, node, go)
+    required: true
   runtime:
-    description: Runtime (python, nodejs, go)
+    description: Runtime version (e.g. 3.11, 20, 1.21)
     required: true
 
 runs:
   using: composite
   steps:
     - name: Setup Python
-      if: startsWith(inputs.runtime, 'python')
+      if: inputs.language == 'python'
       uses: actions/setup-python@v5.3.0
       with:
-        python-version: '3.11'
+        python-version: ${{ inputs.runtime }}
         cache: pip
         cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
 
     - name: Setup Node.js
-      if: startsWith(inputs.runtime, 'node')
+      if: inputs.language == 'node'
       uses: actions/setup-node@v4.1.0
       with:
-        node-version: '20'
+        node-version: ${{ inputs.runtime }}
         cache: npm
         cache-dependency-path: ./functions/${{ inputs.function }}/package.json
 
     - name: Setup Go
-      if: startsWith(inputs.runtime, 'go')
+      if: inputs.language == 'go'
       uses: actions/setup-go@v5.2.0
       with:
-        go-version: '1.21'
+        go-version: ${{ inputs.runtime }}
         cache: true
         cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
     - name: Install Test Dependencies (Python)
-      if: startsWith(inputs.runtime, 'python')
+      if: inputs.language == 'python'
       shell: bash
       run: |
         if [ -f "./functions/${{ inputs.function }}/requirements-test.txt" ]; then
@@ -47,7 +50,7 @@ runs:
         fi
 
     - name: Install Test Dependencies (Node.js)
-      if: startsWith(inputs.runtime, 'node')
+      if: inputs.language == 'node'
       shell: bash
       run: |
         if [ -f "./functions/${{ inputs.function }}/package.json" ]; then
@@ -56,7 +59,7 @@ runs:
         fi
 
     - name: Run Python Tests
-      if: startsWith(inputs.runtime, 'python')
+      if: inputs.language == 'python'
       shell: bash
       run: |
         cd ./functions/${{ inputs.function }}
@@ -67,14 +70,14 @@ runs:
         fi
 
     - name: Run Node.js Tests
-      if: startsWith(inputs.runtime, 'node')
+      if: inputs.language == 'node'
       shell: bash
       run: |
         cd ./functions/${{ inputs.function }}
         npm test
 
     - name: Run Go Tests
-      if: startsWith(inputs.runtime, 'go')
+      if: inputs.language == 'go'
       shell: bash
       run: |
         cd ./functions/${{ inputs.function }}

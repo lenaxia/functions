@@ -1,4 +1,5 @@
 environment: python3-manga-updater
-runtime: python311
+language: python
+runtime: "3.11"
 version: "1.0.1"
 source: https://github.com/example/functions

@@ -27,7 +27,7 @@ tasks:
       - rsync -a --ignore-existing --progress {{.ROOT_DIR}}/include/ {{.WORK_DIR}}
       - rsync -a --ignore-existing --progress {{.ROOT_DIR}}/functions/{{.FUNCTION}}/ {{.WORK_DIR}}
       - |
-        case "{{.RUNTIME}}" in
+        case "{{.LANGUAGE}}" in
           python*)
             if [ -f "requirements.txt" ]; then
               pip install --requirement requirements.txt --target .fission/deps
@@ -72,8 +72,8 @@ tasks:
       - rm -rf {{.WORK_DIR}}
     vars:
       FUNCTION: '{{index .MATCH 0}}'
-      RUNTIME:
-        sh: yq -r '.runtime' {{.ROOT_DIR}}/functions/{{.FUNCTION}}/config.yaml
+      LANGUAGE:
+        sh: yq -r '.language' {{.ROOT_DIR}}/functions/{{.FUNCTION}}/config.yaml
       WORK_DIR:
         sh: mktemp -d
     preconditions:

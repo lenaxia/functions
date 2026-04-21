@@ -10,16 +10,19 @@ inputs:
 
 outputs:
   environment:
-    description: Environment
+    description: Fission environment name
     value: ${{ steps.options.outputs.environment }}
+  language:
+    description: Programming language (python, node, go)
+    value: ${{ steps.options.outputs.language }}
   runtime:
-    description: Runtime
+    description: Runtime version (e.g. 3.11, 20, 1.21)
     value: ${{ steps.options.outputs.runtime }}
   source:
-    description: Source
+    description: Source repository URL
     value: ${{ steps.options.outputs.source }}
   version:
-    description: Version
+    description: Function version
     value: ${{ steps.options.outputs.version }}
 
 runs:
@@ -30,20 +33,14 @@ runs:
       shell: bash
       working-directory: ./functions/${{ inputs.function }}
       run: |
-        ENVIRONMENT=$(\
-            yq -r '.environment' config.yaml \
-        )
-        RUNTIME=$(\
-            yq -r '.runtime' config.yaml \
-        )
-        SOURCE=$(\
-            yq -r '.source' config.yaml \
-        )
-        VERSION=$(\
-            yq -r '.version' config.yaml \
-        )
+        ENVIRONMENT=$(yq -r '.environment' config.yaml)
+        LANGUAGE=$(yq -r '.language' config.yaml)
+        RUNTIME=$(yq -r '.runtime' config.yaml)
+        SOURCE=$(yq -r '.source' config.yaml)
+        VERSION=$(yq -r '.version' config.yaml)
 
         echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+        echo "language=${LANGUAGE}" >> $GITHUB_OUTPUT
         echo "runtime=${RUNTIME}" >> $GITHUB_OUTPUT
         echo "source=${SOURCE}" >> $GITHUB_OUTPUT
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
