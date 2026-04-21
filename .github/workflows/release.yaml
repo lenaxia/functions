@@ -76,12 +76,13 @@ jobs:
   status:
     if: ${{ !cancelled() }}
     needs: ["build"]
+    runs-on: ubuntu-latest
     steps:
       - name: Any build jobs failed?
         if: ${{ needs.build.result == 'failure' }}
-          run: exit 1
+        run: exit 1
 
       - name: All jobs passed or skipped?
         if: ${{ needs.build.result != 'failure' && needs.build.result != 'skipped' }}
-          run: echo "All build jobs passed or skipped" && echo "${{ toJSON(needs.build.result) }}"
+        run: echo "All build jobs passed or skipped" && echo "${{ toJSON(needs.build.result) }}"
         continue-on-error: true

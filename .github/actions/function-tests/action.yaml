@@ -14,29 +14,29 @@ inputs:
 runs:
   using: composite
   steps:
-     - name: Setup Python
-        if: inputs.runtime == 'python'
-        uses: actions/setup-python@v5.3.0
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
+    - name: Setup Python
+      if: inputs.runtime == 'python'
+      uses: actions/setup-python@v5.3.0
+      with:
+        python-version: '3.11'
+        cache: pip
+        cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
 
     - name: Setup Node.js
-        if: inputs.runtime == 'nodejs'
-        uses: actions/setup-node@v4.1.0
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: ./functions/${{ inputs.function }}/package.json
+      if: inputs.runtime == 'nodejs'
+      uses: actions/setup-node@v4.1.0
+      with:
+        node-version: '20'
+        cache: npm
+        cache-dependency-path: ./functions/${{ inputs.function }}/package.json
 
     - name: Setup Go
-        if: inputs.runtime == 'go'
-        uses: actions/setup-go@v5.2.0
-        with:
-          go-version: '1.21'
-          cache: true
-          cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
+      if: inputs.runtime == 'go'
+      uses: actions/setup-go@v5.2.0
+      with:
+        go-version: '1.21'
+        cache: true
+        cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
     - name: Install Test Dependencies (Python)
       if: inputs.runtime == 'python' && hashFiles('./functions/${{ inputs.function }}/requirements-test.txt') != ''

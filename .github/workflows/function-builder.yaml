@@ -152,15 +152,14 @@ jobs:
         shell: bash
         run: |
           cd ./functions/${{ inputs.function }}
-          zip -r ../${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip \
-            --exclude='.fission/*' \
-            --exclude='.git/*' \
-            --exclude='__pycache__/*' \
-            --exclude='*.pyc' \
-            --exclude='node_modules/*' \
-            --exclude='.gitignore' \
-            --exclude='tests/*' \
-            . || true
+          zip -r ../${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip . \
+            -x '.fission/*' \
+            -x '.git/*' \
+            -x '__pycache__/*' \
+            -x '*.pyc' \
+            -x 'node_modules/*' \
+            -x '.gitignore' \
+            -x 'tests/*'
 
       - name: Upload Function Package
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
@@ -185,7 +184,7 @@ jobs:
           retention-days: 1
 
   release:
-    if: ${{ inputs.release && needs.prepare.outputs.function-exists != 'true' }}
+    if: ${{ inputs.release && needs.prepare.outputs.function-exists == 'true' }}
     name: Release
     needs: ["prepare", "build"]
     runs-on: ubuntu-latest
