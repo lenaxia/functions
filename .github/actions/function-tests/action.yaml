@@ -39,20 +39,24 @@ runs:
         cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
     - name: Install Test Dependencies (Python)
-      if: startsWith(inputs.runtime, 'python') && hashFiles('./functions/${{ inputs.function }}/requirements-test.txt') != ''
+      if: startsWith(inputs.runtime, 'python')
       shell: bash
       run: |
-        pip install --requirement ./functions/${{ inputs.function }}/requirements-test.txt
+        if [ -f "./functions/${{ inputs.function }}/requirements-test.txt" ]; then
+          pip install --requirement ./functions/${{ inputs.function }}/requirements-test.txt
+        fi
 
     - name: Install Test Dependencies (Node.js)
-      if: startsWith(inputs.runtime, 'node') && hashFiles('./functions/${{ inputs.function }}/package.json') != ''
+      if: startsWith(inputs.runtime, 'node')
       shell: bash
       run: |
-        cd ./functions/${{ inputs.function }}
-        npm ci
+        if [ -f "./functions/${{ inputs.function }}/package.json" ]; then
+          cd ./functions/${{ inputs.function }}
+          npm ci
+        fi
 
     - name: Run Python Tests
-      if: startsWith(inputs.runtime, 'python') && hashFiles('./functions/${{ inputs.function }}/tests/**/*.py') != ''
+      if: startsWith(inputs.runtime, 'python')
       shell: bash
       run: |
         cd ./functions/${{ inputs.function }}
@@ -63,14 +67,14 @@ runs:
         fi
 
     - name: Run Node.js Tests
-      if: startsWith(inputs.runtime, 'node') && hashFiles('./functions/${{ inputs.function }}/tests/**/*.test.js') != ''
+      if: startsWith(inputs.runtime, 'node')
       shell: bash
       run: |
         cd ./functions/${{ inputs.function }}
         npm test
 
     - name: Run Go Tests
-      if: startsWith(inputs.runtime, 'go') && hashFiles('./functions/${{ inputs.function }}/**/*_test.go') != ''
+      if: startsWith(inputs.runtime, 'go')
       shell: bash
       run: |
         cd ./functions/${{ inputs.function }}

@@ -118,28 +118,34 @@ jobs:
           cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
       - name: Install Dependencies (Python)
-        if: startsWith(needs.prepare.outputs.runtime, 'python') && hashFiles('./functions/${{ inputs.function }}/requirements.txt') != ''
+        if: startsWith(needs.prepare.outputs.runtime, 'python')
         shell: bash
         run: |
-          pip install --requirement ./functions/${{ inputs.function }}/requirements.txt --target ./functions/${{ inputs.function }}/.fission/deps
+          if [ -f "./functions/${{ inputs.function }}/requirements.txt" ]; then
+            pip install --requirement ./functions/${{ inputs.function }}/requirements.txt --target ./functions/${{ inputs.function }}/.fission/deps
+          fi
 
       - name: Install Dependencies (Node.js)
-        if: startsWith(needs.prepare.outputs.runtime, 'node') && hashFiles('./functions/${{ inputs.function }}/package.json') != ''
+        if: startsWith(needs.prepare.outputs.runtime, 'node')
         shell: bash
         run: |
-          cd ./functions/${{ inputs.function }}
-          npm ci --production
-          mkdir -p .fission/deps
-          mv node_modules/* .fission/deps/
+          if [ -f "./functions/${{ inputs.function }}/package.json" ]; then
+            cd ./functions/${{ inputs.function }}
+            npm ci --production
+            mkdir -p .fission/deps
+            mv node_modules/* .fission/deps/
+          fi
 
       - name: Install Dependencies (Go)
-        if: startsWith(needs.prepare.outputs.runtime, 'go') && hashFiles('./functions/${{ inputs.function }}/go.mod') != ''
+        if: startsWith(needs.prepare.outputs.runtime, 'go')
         shell: bash
         run: |
-          cd ./functions/${{ inputs.function }}
-          mkdir -p .fission/deps
-          go mod download -modcacherw
-          cp -r $GOPATH/pkg/mod/* .fission/deps/ || true
+          if [ -f "./functions/${{ inputs.function }}/go.mod" ]; then
+            cd ./functions/${{ inputs.function }}
+            mkdir -p .fission/deps
+            go mod download -modcacherw
+            cp -r $GOPATH/pkg/mod/* .fission/deps/ || true
+          fi
 
       - name: Add Include Directory
         shell: bash
