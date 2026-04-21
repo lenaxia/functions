@@ -76,17 +76,17 @@ jobs:
         shell: bash
         run: |
           case "${{ needs.prepare.outputs.runtime }}" in
-            "python")
+            python*)
               echo "Setting up Python environment..."
               python_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^python[0-9.]+$' || echo "3.11")
               echo "python-version=${python_version}" >> $GITHUB_ENV
               ;;
-            "nodejs")
+            node*)
               echo "Setting up Node.js environment..."
               node_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^node[0-9]+$' || echo "20")
               echo "node-version=${node_version}" >> $GITHUB_ENV
               ;;
-            "go")
+            go*)
               echo "Setting up Go environment..."
               go_version=$(cat ./functions/${{ inputs.function }}/.fission/runtime.txt | grep -E '^go[0-9.]+$' || echo "1.21")
               echo "go-version=${go_version}" >> $GITHUB_ENV
@@ -94,7 +94,7 @@ jobs:
           esac
 
       - name: Setup Python
-        if: needs.prepare.outputs.runtime == 'python'
+        if: startsWith(needs.prepare.outputs.runtime, 'python')
         uses: actions/setup-python@v5.3.0
         with:
           python-version: ${{ env.python-version }}
@@ -102,7 +102,7 @@ jobs:
           cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
 
       - name: Setup Node.js
-        if: needs.prepare.outputs.runtime == 'nodejs'
+        if: startsWith(needs.prepare.outputs.runtime, 'node')
         uses: actions/setup-node@v4.1.0
         with:
           node-version: ${{ env.node-version }}
@@ -110,7 +110,7 @@ jobs:
           cache-dependency-path: ./functions/${{ inputs.function }}/package.json
 
       - name: Setup Go
-        if: needs.prepare.outputs.runtime == 'go'
+        if: startsWith(needs.prepare.outputs.runtime, 'go')
         uses: actions/setup-go@v5.2.0
         with:
           go-version: ${{ env.go-version }}
@@ -118,13 +118,13 @@ jobs:
           cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
       - name: Install Dependencies (Python)
-        if: needs.prepare.outputs.runtime == 'python' && hashFiles('./functions/${{ inputs.function }}/requirements.txt') != ''
+        if: startsWith(needs.prepare.outputs.runtime, 'python') && hashFiles('./functions/${{ inputs.function }}/requirements.txt') != ''
         shell: bash
         run: |
           pip install --requirement ./functions/${{ inputs.function }}/requirements.txt --target ./functions/${{ inputs.function }}/.fission/deps
 
       - name: Install Dependencies (Node.js)
-        if: needs.prepare.outputs.runtime == 'nodejs' && hashFiles('./functions/${{ inputs.function }}/package.json') != ''
+        if: startsWith(needs.prepare.outputs.runtime, 'node') && hashFiles('./functions/${{ inputs.function }}/package.json') != ''
         shell: bash
         run: |
           cd ./functions/${{ inputs.function }}
@@ -133,7 +133,7 @@ jobs:
           mv node_modules/* .fission/deps/
 
       - name: Install Dependencies (Go)
-        if: needs.prepare.outputs.runtime == 'go' && hashFiles('./functions/${{ inputs.function }}/go.mod') != ''
+        if: startsWith(needs.prepare.outputs.runtime, 'go') && hashFiles('./functions/${{ inputs.function }}/go.mod') != ''
         shell: bash
         run: |
           cd ./functions/${{ inputs.function }}
