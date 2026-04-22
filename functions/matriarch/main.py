@@ -100,6 +100,33 @@ class KomgaAPIClient:
             logger.error(f"Error triggering Komga scan: {e}")
             return False
 
+    def import_books(
+        self, series_id: str, file_paths: list, copy_mode: str = "MOVE"
+    ) -> bool:
+        """Import CBZ files directly into Komga via the import API"""
+        if self.test_mode:
+            return True
+
+        try:
+            payload = {
+                "books": [
+                    {"sourceFile": str(p), "seriesId": series_id} for p in file_paths
+                ],
+                "copyMode": copy_mode,
+            }
+            response = requests.post(
+                f"{self.api_url}/api/v1/books/import",
+                headers=self.headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            logger.info(f"Imported {len(file_paths)} book(s) into Komga")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error importing books into Komga: {e}")
+            return False
+
     def verify_book_imported(self, series_id: str, chapter: float) -> bool:
         """Check if a chapter has been imported into Komga"""
         if self.test_mode:
@@ -416,23 +443,22 @@ def main() -> Dict[str, Any]:
 
         verified_chapters = []
         if downloaded_chapters:
-            logger.info("Triggering Komga library scan")
-            scan_success = komga_client.trigger_scan(library_id)
-            if not scan_success:
-                logger.warning("Komga scan failed, but chapters were downloaded")
+            cbz_files = [scratch_path / f"Chapter {c}.cbz" for c in downloaded_chapters]
+            existing_cbz = [f for f in cbz_files if f.exists()]
 
-            logger.info("Waiting a moment for Komga to process...")
-            import time
-
-            time.sleep(5)
-
-            for chapter in downloaded_chapters:
-                if komga_client.verify_book_imported(series_id, chapter):
-                    verified_chapters.append(chapter)
-                    cbz_file = scratch_path / f"Chapter {chapter}.cbz"
-                    scratch_manager.cleanup_file(cbz_file)
+            if existing_cbz:
+                logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
+                import_success = komga_client.import_books(
+                    series_id, existing_cbz, copy_mode="MOVE"
+                )
+                if import_success:
+                    verified_chapters = downloaded_chapters
+                    logger.info(f"Import successful, files moved by Komga")
                 else:
-                    logger.warning(f"Chapter {chapter} not yet verified in Komga")
+                    logger.warning("Komga import API failed, falling back to scan")
+                    komga_client.trigger_scan(library_id)
+            else:
+                logger.warning("No CBZ files found in scratch path to import")
 
         logger.info(f"Downloaded: {len(downloaded_chapters)} chapters")
         logger.info(f"Failed: {len(failed_chapters)} chapters")
