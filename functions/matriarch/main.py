@@ -375,11 +375,23 @@ def _run(
         logger.info(f"Available chapters on Violet Scans: {len(available_chapters)}")
 
         missing = sorted([c for c in available_chapters if c not in existing_chapters])
-        logger.info(f"Missing chapters to download: {missing}")
+        logger.info(f"Missing chapters: {missing}")
 
-        # Recover any complete CBZ files left from a previous interrupted run —
-        # skip re-downloading them, go straight to import.
+        # Recover any complete CBZ files left from a previous interrupted run.
         recovered = set(scratch_manager.recover_existing())
+
+        # Orphaned = in scratch but already in Komga (safe to delete now)
+        orphaned = recovered - set(missing)
+        if orphaned:
+            logger.info(
+                f"Cleaning up {len(orphaned)} orphaned scratch file(s) already in Komga"
+            )
+            for c in orphaned:
+                scratch_manager.cleanup_file(
+                    scratch_path / f"Chapter {_chapter_str(c)}.cbz"
+                )
+
+        # To import: recovered files that are genuinely missing from Komga
         to_import_now = sorted(recovered & set(missing))
         to_download = sorted([c for c in missing if c not in recovered])
 
@@ -388,7 +400,7 @@ def _run(
                 f"Recovering {len(to_import_now)} chapter(s) from previous run: {to_import_now}"
             )
 
-        if not missing and not to_import_now:
+        if not missing:
             logger.info("No missing chapters — already up to date.")
             return
 
@@ -414,7 +426,8 @@ def _run(
             except Exception as e:
                 logger.error(f"Error Chapter {chapter}: {e}")
 
-        # Import everything we have
+        # Import everything we have — use MOVE so Komga moves the file from
+        # scratch into its media dir, cleaning up scratch automatically.
         if downloaded:
             cbz_files = [
                 scratch_path / f"Chapter {_chapter_str(c)}.cbz" for c in downloaded
@@ -423,14 +436,18 @@ def _run(
             if existing_cbz:
                 logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
                 if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
-                    logger.info("Import successful")
+                    logger.info("Import successful — files moved by Komga")
+                    # Belt-and-suspenders: delete any that MOVE somehow left behind
+                    for f in existing_cbz:
+                        if f.exists():
+                            logger.warning(f"MOVE left file behind, deleting: {f}")
+                            f.unlink()
                 else:
                     logger.warning("Import API failed, falling back to scan")
                     komga_client.trigger_scan(library_id)
 
-        logger.info(
-            f"Done. Downloaded: {len(downloaded)}, Failed: {len(to_download) - (len(downloaded) - len(to_import_now))}"
-        )
+        failed = len(to_download) - (len(downloaded) - len(to_import_now))
+        logger.info(f"Done. Downloaded: {len(downloaded)}, Failed: {failed}")
 
     except Exception as e:
         logger.error(f"Run failed: {e}")
