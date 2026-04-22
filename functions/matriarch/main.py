@@ -5,6 +5,7 @@ import json
 import zipfile
 import tempfile
 import shutil
+import threading
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
@@ -333,16 +334,75 @@ class ScratchFileManager:
             return False
 
 
+def _run(
+    komga_client,
+    violet_scraper,
+    scratch_manager,
+    scratch_path,
+    series_name,
+    library_id,
+    dry_run,
+):
+    """Long-running work — executes in a background thread."""
+    try:
+        logger.info("Getting series ID from Komga")
+        series_id = komga_client.get_series_id(series_name)
+        if not series_id:
+            logger.error(f"Series not found: {series_name}")
+            return
+
+        logger.info(f"Series ID: {series_id}")
+        existing_chapters = komga_client.get_existing_books(series_id)
+        latest_existing = max(existing_chapters) if existing_chapters else 0
+
+        latest_violet = violet_scraper.get_latest_chapter()
+        logger.info(
+            f"Latest Violet: {latest_violet}, Latest existing: {latest_existing}"
+        )
+
+        if latest_violet <= latest_existing:
+            logger.info("No new chapters.")
+            return
+
+        chapters_to_download = range(int(latest_existing) + 1, latest_violet + 1)
+        logger.info(f"Chapters to download: {list(chapters_to_download)}")
+
+        if dry_run:
+            logger.info(
+                f"DRY RUN — would download {len(list(chapters_to_download))} chapters"
+            )
+            return
+
+        downloaded = []
+        for chapter in chapters_to_download:
+            logger.info(f"Processing Chapter {chapter}")
+            try:
+                if violet_scraper.download_chapter(chapter, scratch_path):
+                    downloaded.append(chapter)
+                else:
+                    logger.error(f"Failed Chapter {chapter}")
+            except Exception as e:
+                logger.error(f"Error Chapter {chapter}: {e}")
+
+        if downloaded:
+            cbz_files = [scratch_path / f"Chapter {c}.cbz" for c in downloaded]
+            existing_cbz = [f for f in cbz_files if f.exists()]
+            if existing_cbz:
+                logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
+                if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
+                    logger.info("Import successful")
+                else:
+                    logger.warning("Import failed, falling back to scan")
+                    komga_client.trigger_scan(library_id)
+
+        logger.info(f"Done. Downloaded: {len(downloaded)} chapters")
+
+    except Exception as e:
+        logger.error(f"Background task failed: {e}")
+
+
 def main() -> Dict[str, Any]:
-    """
-    Main handler for Fission function
-
-    Args:
-        event: Dictionary containing request/event data
-
-    Returns:
-        Dictionary with response data
-    """
+    """Main handler — starts work in background thread and returns immediately."""
     scratch_base_path = _secret("SCRATCH_PATH") or "/mnt/scratch"
     scratch_path = Path(scratch_base_path) / "matriarch"
     series_name = _secret("SERIES_NAME") or "I'll Be The Matriarch In This Life"
@@ -386,95 +446,22 @@ def main() -> Dict[str, Any]:
     violet_scraper = VioletScansScraper(violet_url, test_mode=test_mode)
     scratch_manager = ScratchFileManager(scratch_path, test_mode=test_mode)
 
-    try:
-        logger.info("Getting series ID from Komga")
-        series_id = komga_client.get_series_id(series_name)
-        if not series_id:
-            logger.error(f"Series not found: {series_name}")
-            return {"status": "error", "message": f"Series not found: {series_name}"}
+    thread = threading.Thread(
+        target=_run,
+        args=(
+            komga_client,
+            violet_scraper,
+            scratch_manager,
+            scratch_path,
+            series_name,
+            library_id,
+            dry_run,
+        ),
+        daemon=True,
+    )
+    thread.start()
 
-        logger.info(f"Series ID: {series_id}")
-        logger.info("Getting existing chapters from Komga")
-        existing_chapters = komga_client.get_existing_books(series_id)
-        logger.info(f"Existing chapters: {existing_chapters}")
-
-        latest_existing = max(existing_chapters) if existing_chapters else 0
-
-        logger.info("Getting latest chapter from Violet Scans")
-        latest_violet = violet_scraper.get_latest_chapter()
-        logger.info(f"Latest Violet chapter: {latest_violet}")
-
-        if latest_violet <= latest_existing:
-            logger.info(
-                f"No new chapters. Latest: {latest_violet}, Existing: {latest_existing}"
-            )
-            return {
-                "status": "success",
-                "message": f"No new chapters. Latest available: {latest_violet}",
-            }
-
-        chapters_to_download = range(int(latest_existing) + 1, latest_violet + 1)
-        logger.info(f"Chapters to download: {list(chapters_to_download)}")
-
-        if dry_run:
-            logger.info("DRY RUN - would download chapters but not actually doing it")
-            return {
-                "status": "success",
-                "message": f"Dry run complete. Would download {len(list(chapters_to_download))} chapters.",
-                "chapters_to_download": list(chapters_to_download),
-            }
-
-        downloaded_chapters = []
-        failed_chapters = []
-
-        for chapter in chapters_to_download:
-            logger.info(f"Processing Chapter {chapter}")
-            try:
-                success = violet_scraper.download_chapter(chapter, scratch_path)
-                if success:
-                    downloaded_chapters.append(chapter)
-                    logger.info(f"Successfully downloaded Chapter {chapter}")
-                else:
-                    failed_chapters.append(chapter)
-                    logger.error(f"Failed to download Chapter {chapter}")
-            except Exception as e:
-                failed_chapters.append(chapter)
-                logger.error(f"Error downloading Chapter {chapter}: {e}")
-
-        verified_chapters = []
-        if downloaded_chapters:
-            cbz_files = [scratch_path / f"Chapter {c}.cbz" for c in downloaded_chapters]
-            existing_cbz = [f for f in cbz_files if f.exists()]
-
-            if existing_cbz:
-                logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
-                import_success = komga_client.import_books(
-                    series_id, existing_cbz, copy_mode="MOVE"
-                )
-                if import_success:
-                    verified_chapters = downloaded_chapters
-                    logger.info(f"Import successful, files moved by Komga")
-                else:
-                    logger.warning("Komga import API failed, falling back to scan")
-                    komga_client.trigger_scan(library_id)
-            else:
-                logger.warning("No CBZ files found in scratch path to import")
-
-        logger.info(f"Downloaded: {len(downloaded_chapters)} chapters")
-        logger.info(f"Failed: {len(failed_chapters)} chapters")
-        if downloaded_chapters:
-            logger.info(f"Verified and cleaned up: {len(verified_chapters)} chapters")
-
-        return {
-            "status": "success",
-            "message": f"Completed. Downloaded {len(downloaded_chapters)}, Failed {len(failed_chapters)}",
-            "downloaded": downloaded_chapters,
-            "failed": failed_chapters,
-        }
-
-    except Exception as e:
-        logger.error(f"Handler failed with error: {e}")
-        return {
-            "status": "error",
-            "message": f"Handler failed: {str(e)}",
-        }
+    return {
+        "status": "accepted",
+        "message": "Matriarch update started in background",
+    }
