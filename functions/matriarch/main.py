@@ -1,6 +1,7 @@
 import os
 import logging
 import re
+import json
 import zipfile
 import tempfile
 import shutil
@@ -119,6 +120,14 @@ class VioletScansScraper:
     def __init__(self, base_url: str, test_mode: bool = False):
         self.base_url = base_url
         self.test_mode = test_mode
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
+        )
 
     def get_latest_chapter(self) -> int:
         """Get highest integer chapter number from Violet Scans"""
@@ -126,7 +135,7 @@ class VioletScansScraper:
             return 100
 
         try:
-            response = requests.get(self.base_url, timeout=30)
+            response = self.session.get(self.base_url, timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
 
@@ -154,7 +163,7 @@ class VioletScansScraper:
         try:
             logger.info(f"Downloading Chapter {chapter} from Violet Scans")
 
-            response = requests.get(f"{self.base_url}", timeout=30)
+            response = self.session.get(f"{self.base_url}", timeout=30)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
 
@@ -175,17 +184,49 @@ class VioletScansScraper:
                 chapter_link = f"https://violetscans.org{chapter_link}"
 
             logger.info(f"Chapter URL: {chapter_link}")
-            chapter_response = requests.get(chapter_link, timeout=60)
+            chapter_response = self.session.get(chapter_link, timeout=60)
             chapter_response.raise_for_status()
-            chapter_soup = BeautifulSoup(chapter_response.text, "html.parser")
+            content = chapter_response.text
 
+            # Primary: parse ts_reader.run() JS config
             images = []
-            for img in chapter_soup.select("img.reading-content"):
-                img_url = img.get("data-src") or img.get("src")
-                if img_url:
-                    if not img_url.startswith("http"):
-                        img_url = f"https:{img_url}"
-                    images.append(img_url)
+            ts_match = re.search(r"ts_reader\.run\(\s*({.*?})\s*\)", content, re.DOTALL)
+            if ts_match:
+                try:
+                    json_str = ts_match.group(1)
+                    json_str = re.sub(r",\s*}", "}", json_str)
+                    json_str = re.sub(r",\s*]", "]", json_str)
+                    ts_config = json.loads(json_str)
+                    for source in ts_config.get("sources", []):
+                        images.extend(source.get("images", []))
+                except Exception as e:
+                    logger.warning(f"Could not parse ts_reader config: {e}")
+
+            # Fallback: HTML selectors
+            if not images:
+                chapter_soup = BeautifulSoup(content, "html.parser")
+                for selector in [
+                    "div.reading-content img",
+                    "#readerarea img",
+                    "img[src*='/manga/']",
+                    "img[data-src*='/manga/']",
+                ]:
+                    for img in chapter_soup.select(selector):
+                        src = img.get("data-src") or img.get("src")
+                        if not src:
+                            continue
+                        src = str(src)
+                        if "/manga/" in src:
+                            if not src.startswith("http"):
+                                src = (
+                                    f"https:{src}"
+                                    if src.startswith("//")
+                                    else f"https://violetscans.org{src}"
+                                )
+                            if src not in images:
+                                images.append(src)
+                    if images:
+                        break
 
             if not images:
                 logger.error(f"No images found for Chapter {chapter}")
