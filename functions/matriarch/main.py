@@ -5,7 +5,6 @@ import json
 import zipfile
 import tempfile
 import shutil
-import threading
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
@@ -446,22 +445,17 @@ def main() -> Dict[str, Any]:
     violet_scraper = VioletScansScraper(violet_url, test_mode=test_mode)
     scratch_manager = ScratchFileManager(scratch_path, test_mode=test_mode)
 
-    thread = threading.Thread(
-        target=_run,
-        args=(
-            komga_client,
-            violet_scraper,
-            scratch_manager,
-            scratch_path,
-            series_name,
-            library_id,
-            dry_run,
-        ),
-        daemon=True,
+    _run(
+        komga_client,
+        violet_scraper,
+        scratch_manager,
+        scratch_path,
+        series_name,
+        library_id,
+        dry_run,
     )
-    thread.start()
 
     return {
-        "status": "accepted",
-        "message": "Matriarch update started in background",
+        "status": "success",
+        "message": "Matriarch update completed",
     }
