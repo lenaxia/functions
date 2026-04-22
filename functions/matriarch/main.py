@@ -56,23 +56,34 @@ class KomgaAPIClient:
             return None
 
     def get_existing_books(self, series_id: str) -> List[int]:
-        """Get existing books in series and extract chapter numbers"""
+        """Get ALL existing books in series and extract chapter numbers"""
         if self.test_mode:
             return []
 
         try:
-            response = requests.get(
-                f"{self.api_url}/api/v1/series/{series_id}/books", headers=self.headers
-            )
-            response.raise_for_status()
-            books = response.json().get("content", [])
-
             chapters = []
-            for book in books:
-                name = book.get("name", "")
-                match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", name)
-                if match:
-                    chapters.append(float(match.group(1)))
+            page = 0
+            while True:
+                response = requests.get(
+                    f"{self.api_url}/api/v1/series/{series_id}/books",
+                    headers=self.headers,
+                    params={"size": 500, "page": page},
+                )
+                response.raise_for_status()
+                data = response.json()
+                books = data.get("content", [])
+
+                for book in books:
+                    name = book.get("name", "")
+                    match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", name)
+                    if match:
+                        chapters.append(float(match.group(1)))
+
+                if data.get("last", True):
+                    break
+                page += 1
+
+            return sorted(chapters)
 
             return sorted(chapters)
 
@@ -156,10 +167,10 @@ class VioletScansScraper:
             }
         )
 
-    def get_latest_chapter(self) -> int:
-        """Get highest integer chapter number from Violet Scans"""
+    def get_all_chapters(self) -> List[float]:
+        """Get all chapter numbers available on Violet Scans"""
         if self.test_mode:
-            return 100
+            return [float(i) for i in range(1, 101)]
 
         try:
             response = self.session.get(self.base_url, timeout=30)
@@ -174,13 +185,16 @@ class VioletScansScraper:
                 if match:
                     chapters.append(float(match.group(1)))
 
-            integer_chapters = [int(c) for c in chapters if c == int(c)]
-            if integer_chapters:
-                return max(integer_chapters)
-            return 0
+            return sorted(set(chapters))
         except Exception as e:
-            logger.error(f"Error getting latest chapter from Violet Scans: {e}")
-            return 0
+            logger.error(f"Error getting chapters from Violet Scans: {e}")
+            return []
+
+    def get_latest_chapter(self) -> int:
+        """Get highest integer chapter number from Violet Scans"""
+        chapters = self.get_all_chapters()
+        integer_chapters = [int(c) for c in chapters if c == int(c)]
+        return max(integer_chapters) if integer_chapters else 0
 
     def download_chapter(self, chapter: int, output_path: Path) -> bool:
         """Download chapter pages and create CBZ file"""
@@ -262,7 +276,8 @@ class VioletScansScraper:
             logger.info(f"Found {len(images)} images")
             output_path.mkdir(parents=True, exist_ok=True)
 
-            cbz_filename = output_path / f"Chapter {chapter}.cbz"
+            chapter_str = str(int(chapter)) if chapter == int(chapter) else str(chapter)
+            cbz_filename = output_path / f"Chapter {chapter_str}.cbz"
 
             with zipfile.ZipFile(cbz_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for i, img_url in enumerate(images, 1):
@@ -342,7 +357,7 @@ def _run(
     library_id,
     dry_run,
 ):
-    """Long-running work — executes in a background thread."""
+    """Long-running work — executes synchronously."""
     try:
         logger.info("Getting series ID from Komga")
         series_id = komga_client.get_series_id(series_name)
@@ -351,29 +366,25 @@ def _run(
             return
 
         logger.info(f"Series ID: {series_id}")
-        existing_chapters = komga_client.get_existing_books(series_id)
-        latest_existing = max(existing_chapters) if existing_chapters else 0
+        existing_chapters = set(komga_client.get_existing_books(series_id))
+        logger.info(f"Existing chapters in Komga: {len(existing_chapters)}")
 
-        latest_violet = violet_scraper.get_latest_chapter()
-        logger.info(
-            f"Latest Violet: {latest_violet}, Latest existing: {latest_existing}"
-        )
+        available_chapters = violet_scraper.get_all_chapters()
+        logger.info(f"Available chapters on Violet Scans: {len(available_chapters)}")
 
-        if latest_violet <= latest_existing:
-            logger.info("No new chapters.")
+        missing = sorted([c for c in available_chapters if c not in existing_chapters])
+        logger.info(f"Missing chapters to download: {missing}")
+
+        if not missing:
+            logger.info("No missing chapters — already up to date.")
             return
 
-        chapters_to_download = range(int(latest_existing) + 1, latest_violet + 1)
-        logger.info(f"Chapters to download: {list(chapters_to_download)}")
-
         if dry_run:
-            logger.info(
-                f"DRY RUN — would download {len(list(chapters_to_download))} chapters"
-            )
+            logger.info(f"DRY RUN — would download {len(missing)} chapters: {missing}")
             return
 
         downloaded = []
-        for chapter in chapters_to_download:
+        for chapter in missing:
             logger.info(f"Processing Chapter {chapter}")
             try:
                 if violet_scraper.download_chapter(chapter, scratch_path):
@@ -384,7 +395,10 @@ def _run(
                 logger.error(f"Error Chapter {chapter}: {e}")
 
         if downloaded:
-            cbz_files = [scratch_path / f"Chapter {c}.cbz" for c in downloaded]
+            cbz_files = [
+                scratch_path / f"Chapter {str(int(c)) if c == int(c) else str(c)}.cbz"
+                for c in downloaded
+            ]
             existing_cbz = [f for f in cbz_files if f.exists()]
             if existing_cbz:
                 logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
@@ -394,7 +408,9 @@ def _run(
                     logger.warning("Import failed, falling back to scan")
                     komga_client.trigger_scan(library_id)
 
-        logger.info(f"Done. Downloaded: {len(downloaded)} chapters")
+        logger.info(
+            f"Done. Downloaded: {len(downloaded)}, Failed: {len(missing) - len(downloaded)}"
+        )
 
     except Exception as e:
         logger.error(f"Background task failed: {e}")
