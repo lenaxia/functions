@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +20,11 @@ def _secret(name: str, default: str = "") -> str:
     if path.exists():
         return path.read_text().strip()
     return os.getenv(name, default)
+
+
+def _chapter_str(chapter: float) -> str:
+    """Format chapter number as string — strip trailing .0 for integers."""
+    return str(int(chapter)) if chapter == int(chapter) else str(chapter)
 
 
 class KomgaAPIClient:
@@ -55,8 +60,13 @@ class KomgaAPIClient:
             logger.error(f"Error getting series ID: {e}")
             return None
 
-    def get_existing_books(self, series_id: str) -> List[int]:
-        """Get ALL existing books in series and extract chapter numbers"""
+    def get_existing_books(self, series_id: str) -> List[float]:
+        """Get ALL existing books in series, normalizing chapter numbers.
+
+        Handles zero-padded names (Chapter 000 = 1, Chapter 047 = 47) and
+        decimal names (Chapter 47.5) correctly so set diff works regardless
+        of how the CBZ was originally named.
+        """
         if self.test_mode:
             return []
 
@@ -74,18 +84,21 @@ class KomgaAPIClient:
                 books = data.get("content", [])
 
                 for book in books:
-                    name = book.get("name", "")
-                    match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", name)
-                    if match:
-                        chapters.append(float(match.group(1)))
+                    # Use the actual file URL to get the filename — more
+                    # reliable than the display name which Komga may reformat.
+                    fname = Path(book.get("url", "")).stem  # e.g. "Chapter 047"
+                    # Try filename first, fall back to display name
+                    for text in (fname, book.get("name", "")):
+                        match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", text)
+                        if match:
+                            chapters.append(float(match.group(1)))
+                            break
 
                 if data.get("last", True):
                     break
                 page += 1
 
-            return sorted(chapters)
-
-            return sorted(chapters)
+            return sorted(set(chapters))
 
         except Exception as e:
             logger.error(f"Error getting existing books: {e}")
@@ -97,14 +110,14 @@ class KomgaAPIClient:
             return True
 
         try:
-            if library_id:
-                url = f"{self.api_url}/api/v1/libraries/{library_id}/scan"
-            else:
-                url = f"{self.api_url}/api/v1/libraries/scan"
-
+            url = (
+                f"{self.api_url}/api/v1/libraries/{library_id}/scan"
+                if library_id
+                else f"{self.api_url}/api/v1/libraries/scan"
+            )
             response = requests.post(url, headers=self.headers)
             response.raise_for_status()
-            logger.info(f"Komga scan triggered successfully")
+            logger.info("Komga scan triggered successfully")
             return True
 
         except Exception as e:
@@ -138,19 +151,6 @@ class KomgaAPIClient:
             logger.error(f"Error importing books into Komga: {e}")
             return False
 
-    def verify_book_imported(self, series_id: str, chapter: float) -> bool:
-        """Check if a chapter has been imported into Komga"""
-        if self.test_mode:
-            return True
-
-        try:
-            existing = self.get_existing_books(series_id)
-            return chapter in existing
-
-        except Exception as e:
-            logger.error(f"Error verifying book import: {e}")
-            return False
-
 
 class VioletScansScraper:
     """Handle scraping and download from Violet Scans"""
@@ -166,6 +166,37 @@ class VioletScansScraper:
                 "Accept-Language": "en-US,en;q=0.5",
             }
         )
+        # Cache: {chapter_num: chapter_url}
+        self._chapter_map: Optional[Dict[float, str]] = None
+
+    def _fetch_chapter_map(self) -> Dict[float, str]:
+        """Fetch the chapter list once and cache it."""
+        if self._chapter_map is not None:
+            return self._chapter_map
+
+        response = self.session.get(self.base_url, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        chapter_map = {}
+        for link in soup.select("div#chapterlist li a"):
+            href = link.get("href", "")
+            if not href:
+                continue
+            text = re.sub(r"\s+", " ", link.text.strip())
+            match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", text)
+            if match:
+                num = float(match.group(1))
+                url = (
+                    href
+                    if href.startswith("http")
+                    else f"https://violetscans.org{href}"
+                )
+                chapter_map[num] = url
+
+        self._chapter_map = chapter_map
+        logger.info(f"Fetched chapter map: {len(chapter_map)} chapters")
+        return self._chapter_map
 
     def get_all_chapters(self) -> List[float]:
         """Get all chapter numbers available on Violet Scans"""
@@ -173,59 +204,26 @@ class VioletScansScraper:
             return [float(i) for i in range(1, 101)]
 
         try:
-            response = self.session.get(self.base_url, timeout=30)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            chapters = []
-            for link in soup.select("div#chapterlist li a"):
-                text = link.text.strip()
-                text = re.sub(r"\s+", " ", text)
-                match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", text)
-                if match:
-                    chapters.append(float(match.group(1)))
-
-            return sorted(set(chapters))
+            return sorted(self._fetch_chapter_map().keys())
         except Exception as e:
             logger.error(f"Error getting chapters from Violet Scans: {e}")
             return []
 
-    def get_latest_chapter(self) -> int:
-        """Get highest integer chapter number from Violet Scans"""
-        chapters = self.get_all_chapters()
-        integer_chapters = [int(c) for c in chapters if c == int(c)]
-        return max(integer_chapters) if integer_chapters else 0
-
-    def download_chapter(self, chapter: int, output_path: Path) -> bool:
+    def download_chapter(self, chapter: float, output_path: Path) -> bool:
         """Download chapter pages and create CBZ file"""
         if self.test_mode:
             return False
 
         try:
-            logger.info(f"Downloading Chapter {chapter} from Violet Scans")
+            chapter_map = self._fetch_chapter_map()
+            chapter_url = chapter_map.get(chapter)
 
-            response = self.session.get(f"{self.base_url}", timeout=30)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-
-            chapter_link = None
-            for link in soup.select("div#chapterlist li a"):
-                text = link.text.strip()
-                text = re.sub(r"\s+", " ", text)
-                match = re.search(r"Chapter\s+" + str(chapter), text)
-                if match:
-                    chapter_link = link.get("href")
-                    break
-
-            if not chapter_link:
-                logger.error(f"Could not find link for Chapter {chapter}")
+            if not chapter_url:
+                logger.error(f"Could not find URL for Chapter {chapter} in chapter map")
                 return False
 
-            if not isinstance(chapter_link, str) or not chapter_link.startswith("http"):
-                chapter_link = f"https://violetscans.org{chapter_link}"
-
-            logger.info(f"Chapter URL: {chapter_link}")
-            chapter_response = self.session.get(chapter_link, timeout=60)
+            logger.info(f"Downloading Chapter {chapter} from {chapter_url}")
+            chapter_response = self.session.get(chapter_url, timeout=60)
             chapter_response.raise_for_status()
             content = chapter_response.text
 
@@ -276,30 +274,35 @@ class VioletScansScraper:
             logger.info(f"Found {len(images)} images")
             output_path.mkdir(parents=True, exist_ok=True)
 
-            chapter_str = str(int(chapter)) if chapter == int(chapter) else str(chapter)
-            cbz_filename = output_path / f"Chapter {chapter_str}.cbz"
+            cbz_filename = output_path / f"Chapter {_chapter_str(chapter)}.cbz"
 
-            with zipfile.ZipFile(cbz_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
+            # Write to a temp file first — if we crash mid-download the
+            # partial file won't be mistaken for a complete CBZ on recovery.
+            tmp_filename = cbz_filename.with_suffix(".cbz.tmp")
+            with zipfile.ZipFile(tmp_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for i, img_url in enumerate(images, 1):
                     try:
-                        logger.info(f"Downloading image {i + 1}/{len(images)}")
+                        logger.info(f"Downloading image {i}/{len(images)}")
                         img_response = requests.get(img_url, timeout=30)
                         img_response.raise_for_status()
-
-                        ext = ".jpg"
-                        if "png" in str(img_url).lower():
-                            ext = ".png"
-
-                        img_data = img_response.content
-                        zipf.writestr(f"page_{i:03d}{ext}", img_data)
+                        ext = ".png" if "png" in str(img_url).lower() else ".jpg"
+                        zipf.writestr(f"page_{i:03d}{ext}", img_response.content)
                     except Exception as e:
                         logger.error(f"Error downloading image {i}: {e}")
 
-            logger.info(f"Created CBZ: {cbz_filename}")
-            logger.info(f"CBZ size: {cbz_filename.stat().st_size} bytes")
+            # Atomic rename — only exists as .cbz once fully written
+            tmp_filename.rename(cbz_filename)
+            logger.info(
+                f"Created CBZ: {cbz_filename} ({cbz_filename.stat().st_size:,} bytes)"
+            )
             return True
+
         except Exception as e:
             logger.error(f"Error downloading Chapter {chapter}: {e}")
+            # Clean up any partial temp file
+            tmp = output_path / f"Chapter {_chapter_str(chapter)}.cbz.tmp"
+            if tmp.exists():
+                tmp.unlink()
             return False
 
 
@@ -311,32 +314,31 @@ class ScratchFileManager:
         self.test_mode = test_mode
         self.scratch_path.mkdir(parents=True, exist_ok=True)
 
-    def write_cbz(self, chapter: int, cbz_data: bytes) -> bool:
-        """Write CBZ data to scratch directory"""
-        if self.test_mode:
-            return False
+    def recover_existing(self) -> List[float]:
+        """Find any complete CBZ files left from a previous interrupted run.
 
-        try:
-            cbz_filename = self.scratch_path / f"Chapter {chapter}.cbz"
-
-            with open(cbz_filename, "wb") as f:
-                f.write(cbz_data)
-
-            logger.info(f"Written to scratch: {cbz_filename}")
-            return True
-        except Exception as e:
-            logger.error(f"Error writing to scratch: {e}")
-            return False
-
-    def list_existing_files(self) -> List[Path]:
-        """List existing CBZ files in scratch directory"""
-        return list(self.scratch_path.glob("*.cbz"))
+        Returns chapter numbers for CBZ files that are fully written
+        (i.e. not .cbz.tmp partials).
+        """
+        recovered = []
+        for f in self.scratch_path.glob("*.cbz"):
+            match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)\.cbz$", f.name)
+            if match:
+                recovered.append(float(match.group(1)))
+        if recovered:
+            logger.info(
+                f"Found {len(recovered)} pre-existing CBZ(s) in scratch to recover: {sorted(recovered)}"
+            )
+        # Clean up any leftover .tmp files from a previous crash
+        for tmp in self.scratch_path.glob("*.cbz.tmp"):
+            logger.warning(f"Removing partial temp file: {tmp}")
+            tmp.unlink()
+        return sorted(recovered)
 
     def cleanup_file(self, filepath: Path) -> bool:
         """Remove file from scratch directory"""
         if self.test_mode:
             return False
-
         try:
             if filepath.exists():
                 filepath.unlink()
@@ -357,7 +359,7 @@ def _run(
     library_id,
     dry_run,
 ):
-    """Long-running work — executes synchronously."""
+    """Core workflow — fetch chapter lists, diff, download missing, import."""
     try:
         logger.info("Getting series ID from Komga")
         series_id = komga_client.get_series_id(series_name)
@@ -375,16 +377,34 @@ def _run(
         missing = sorted([c for c in available_chapters if c not in existing_chapters])
         logger.info(f"Missing chapters to download: {missing}")
 
-        if not missing:
+        # Recover any complete CBZ files left from a previous interrupted run —
+        # skip re-downloading them, go straight to import.
+        recovered = set(scratch_manager.recover_existing())
+        to_import_now = sorted(recovered & set(missing))
+        to_download = sorted([c for c in missing if c not in recovered])
+
+        if to_import_now:
+            logger.info(
+                f"Recovering {len(to_import_now)} chapter(s) from previous run: {to_import_now}"
+            )
+
+        if not missing and not to_import_now:
             logger.info("No missing chapters — already up to date.")
             return
 
         if dry_run:
-            logger.info(f"DRY RUN — would download {len(missing)} chapters: {missing}")
+            logger.info(
+                f"DRY RUN — would download {len(to_download)} chapter(s): {to_download}"
+            )
+            if to_import_now:
+                logger.info(
+                    f"DRY RUN — would import {len(to_import_now)} recovered chapter(s): {to_import_now}"
+                )
             return
 
-        downloaded = []
-        for chapter in missing:
+        # Download missing chapters
+        downloaded = list(to_import_now)  # start with recovered
+        for chapter in to_download:
             logger.info(f"Processing Chapter {chapter}")
             try:
                 if violet_scraper.download_chapter(chapter, scratch_path):
@@ -394,10 +414,10 @@ def _run(
             except Exception as e:
                 logger.error(f"Error Chapter {chapter}: {e}")
 
+        # Import everything we have
         if downloaded:
             cbz_files = [
-                scratch_path / f"Chapter {str(int(c)) if c == int(c) else str(c)}.cbz"
-                for c in downloaded
+                scratch_path / f"Chapter {_chapter_str(c)}.cbz" for c in downloaded
             ]
             existing_cbz = [f for f in cbz_files if f.exists()]
             if existing_cbz:
@@ -405,19 +425,19 @@ def _run(
                 if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
                     logger.info("Import successful")
                 else:
-                    logger.warning("Import failed, falling back to scan")
+                    logger.warning("Import API failed, falling back to scan")
                     komga_client.trigger_scan(library_id)
 
         logger.info(
-            f"Done. Downloaded: {len(downloaded)}, Failed: {len(missing) - len(downloaded)}"
+            f"Done. Downloaded: {len(downloaded)}, Failed: {len(to_download) - (len(downloaded) - len(to_import_now))}"
         )
 
     except Exception as e:
-        logger.error(f"Background task failed: {e}")
+        logger.error(f"Run failed: {e}")
 
 
 def main() -> Dict[str, Any]:
-    """Main handler — starts work in background thread and returns immediately."""
+    """Fission entry point."""
     scratch_base_path = _secret("SCRATCH_PATH") or "/mnt/scratch"
     scratch_path = Path(scratch_base_path) / "matriarch"
     series_name = _secret("SERIES_NAME") or "I'll Be The Matriarch In This Life"
@@ -435,27 +455,20 @@ def main() -> Dict[str, Any]:
         _secret("TEST_MODE") or os.getenv("TEST_MODE", "false")
     ).lower() == "true"
 
-    logger.info(f"Starting Matriarch update workflow")
-    logger.info(f"Series: {series_name}")
-    logger.info(f"Komga API: {komga_api_url}")
-    logger.info(f"Scratch path: {scratch_path}")
-    logger.info(f"Dry run: {dry_run}")
-    logger.info(f"Test mode: {test_mode}")
+    logger.info(
+        f"Starting Matriarch update — series={series_name!r} scratch={scratch_path} dry_run={dry_run}"
+    )
 
     if test_mode:
-        logger.info("Test mode detected, returning early")
         return {
             "status": "success",
-            "message": "Test mode - handler logic skipped",
+            "message": "Test mode - skipped",
             "test_mode": True,
         }
 
     if not komga_api_key:
         logger.error("KOMGA_API_KEY not provided")
-        return {
-            "status": "error",
-            "message": "KOMGA_API_KEY is required",
-        }
+        return {"status": "error", "message": "KOMGA_API_KEY is required"}
 
     komga_client = KomgaAPIClient(komga_api_url, komga_api_key, test_mode=test_mode)
     violet_scraper = VioletScansScraper(violet_url, test_mode=test_mode)
@@ -471,7 +484,4 @@ def main() -> Dict[str, Any]:
         dry_run,
     )
 
-    return {
-        "status": "success",
-        "message": "Matriarch update completed",
-    }
+    return {"status": "success", "message": "Matriarch update completed"}
