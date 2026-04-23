@@ -438,26 +438,20 @@ def _run(
                 logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
                 if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
                     logger.info(
-                        "Import accepted by Komga (async) — waiting for processing"
+                        "Import accepted by Komga (async) — polling for completion"
                     )
-
-                    time.sleep(15)
-                    # Verify import completed and clean up scratch
-                    post_import_chapters = set(
-                        komga_client.get_existing_books(series_id)
-                    )
-                    for f in existing_cbz:
-                        if f.exists():
-                            m = re.search(r"Chapter (\d+(?:\.\d+)?)\.cbz$", f.name)
-                            if m and float(m.group(1)) in post_import_chapters:
-                                logger.info(
-                                    f"Verified in Komga, cleaning up scratch: {f.name}"
-                                )
-                                f.unlink()
-                            else:
-                                logger.warning(
-                                    f"File still in scratch but NOT confirmed in Komga — keeping: {f.name}"
-                                )
+                    # Poll until Komga moves each file out of scratch (max 5 min)
+                    deadline = time.time() + 300
+                    pending = list(existing_cbz)
+                    while pending and time.time() < deadline:
+                        time.sleep(3)
+                        pending = [f for f in pending if f.exists()]
+                    if pending:
+                        logger.warning(
+                            f"{len(pending)} file(s) not moved by Komga within timeout — keeping in scratch for next run"
+                        )
+                    else:
+                        logger.info("All files moved by Komga successfully")
                 else:
                     logger.warning("Import API failed, falling back to scan")
                     komga_client.trigger_scan(library_id)
