@@ -437,11 +437,23 @@ def _run(
                 logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
                 if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
                     logger.info("Import successful — files moved by Komga")
-                    # Belt-and-suspenders: delete any that MOVE somehow left behind
+                    # MOVE should have removed files from scratch — if any remain,
+                    # verify they're actually in Komga before deleting.
+                    post_import_chapters = set(
+                        komga_client.get_existing_books(series_id)
+                    )
                     for f in existing_cbz:
                         if f.exists():
-                            logger.warning(f"MOVE left file behind, deleting: {f}")
-                            f.unlink()
+                            m = re.search(r"Chapter (\d+(?:\.\d+)?)\.cbz$", f.name)
+                            if m and float(m.group(1)) in post_import_chapters:
+                                logger.info(
+                                    f"Verified in Komga, cleaning up scratch: {f.name}"
+                                )
+                                f.unlink()
+                            else:
+                                logger.warning(
+                                    f"File still in scratch but NOT confirmed in Komga — keeping: {f.name}"
+                                )
                 else:
                     logger.warning("Import API failed, falling back to scan")
                     komga_client.trigger_scan(library_id)
