@@ -5,6 +5,7 @@ import json
 import zipfile
 import tempfile
 import shutil
+import time
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
@@ -436,9 +437,12 @@ def _run(
             if existing_cbz:
                 logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
                 if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
-                    logger.info("Import successful — files moved by Komga")
-                    # MOVE should have removed files from scratch — if any remain,
-                    # verify they're actually in Komga before deleting.
+                    logger.info(
+                        "Import accepted by Komga (async) — waiting for processing"
+                    )
+
+                    time.sleep(15)
+                    # Verify import completed and clean up scratch
                     post_import_chapters = set(
                         komga_client.get_existing_books(series_id)
                     )
