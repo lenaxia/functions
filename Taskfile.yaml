@@ -68,6 +68,9 @@ tasks:
           -x 'node_modules/*' \
           -x '.gitignore' \
           -x 'tests/*' \
+          -x '.pytest_cache/*' \
+          -x 'requirements-test.txt' \
+          -x '*_test.go' \
         && echo "Function packaged: {{.ROOT_DIR}}/{{.FUNCTION}}-${VERSION}.zip"
       - rm -rf {{.WORK_DIR}}
     vars:

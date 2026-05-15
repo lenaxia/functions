@@ -145,7 +145,10 @@ jobs:
             -x '*.pyc' \
             -x 'node_modules/*' \
             -x '.gitignore' \
-            -x 'tests/*'
+            -x 'tests/*' \
+            -x '.pytest_cache/*' \
+            -x 'requirements-test.txt' \
+            -x '*_test.go'
 
       - name: Upload Function Package
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
