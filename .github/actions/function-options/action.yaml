@@ -34,10 +34,17 @@ runs:
       working-directory: ./functions/${{ inputs.function }}
       run: |
         ENVIRONMENT=$(yq -r '.environment' config.yaml)
-        LANGUAGE=$(yq -r '.language' config.yaml)
         RUNTIME=$(yq -r '.runtime' config.yaml)
         SOURCE=$(yq -r '.source' config.yaml)
         VERSION=$(yq -r '.version' config.yaml)
+
+        # Derive language from runtime prefix
+        case "${RUNTIME}" in
+          python*) LANGUAGE="python" ;;
+          node*)   LANGUAGE="node" ;;
+          go*)     LANGUAGE="go" ;;
+          *)       LANGUAGE="" ;;
+        esac
 
         echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
         echo "language=${LANGUAGE}" >> $GITHUB_OUTPUT
