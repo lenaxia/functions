@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
-import handler as matriarch_vy_handler
+import main as matriarch_vy_handler
 
 
 def test_komga_api_get_series_id_success():

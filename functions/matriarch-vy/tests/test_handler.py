@@ -5,7 +5,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
-import handler as matriarch_vy_handler
+import main as matriarch_vy_handler
 
 
 def test_handler_success():

@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch, call
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import handler as h
+import main as h
 
 # ---------------------------------------------------------------------------
 # HTML fixtures — representative slices of real page structure
