@@ -408,3 +408,7 @@ def handler(event: Dict[str, Any]) -> Dict[str, Any]:
             "status": "error",
             "message": f"Handler failed: {str(e)}",
         }
+
+
+# Fission entrypoint alias
+main = handler
