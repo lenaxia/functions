@@ -42,10 +42,21 @@ runs:
         VERSION=$(yq -r '.version' config.yaml)
 
         # Derive language and numeric version from runtime prefix
+        # Handles formats like python311 → 3.11, python3.11 → 3.11, node20 → 20, go1.21 → 1.21
         case "${RUNTIME}" in
           python*)
             LANGUAGE="python"
-            LANGUAGE_VERSION=$(echo "${RUNTIME}" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+            RAW=$(echo "${RUNTIME}" | sed 's/python//')
+            # If no dot, insert one after first digit (311 → 3.11)
+            if echo "${RAW}" | grep -qE '^\.[0-9]'; then
+              LANGUAGE_VERSION=$(echo "${RAW}" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+            elif echo "${RAW}" | grep -qE '^[0-9]\.[0-9]'; then
+              LANGUAGE_VERSION="${RAW}"
+            else
+              MAJOR=$(echo "${RAW}" | cut -c1)
+              MINOR=$(echo "${RAW}" | cut -c2-)
+              LANGUAGE_VERSION="${MAJOR}.${MINOR}"
+            fi
             ;;
           node*)
             LANGUAGE="node"
@@ -53,7 +64,7 @@ runs:
             ;;
           go*)
             LANGUAGE="go"
-            LANGUAGE_VERSION=$(echo "${RUNTIME}" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?')
+            LANGUAGE_VERSION=$(echo "${RUNTIME}" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || echo "${RUNTIME}" | grep -oE '[0-9]+')
             ;;
           *)
             LANGUAGE=""
