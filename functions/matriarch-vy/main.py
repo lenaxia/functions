@@ -272,7 +272,7 @@ class ScratchFileManager:
             return False
 
 
-def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+def handler(event=None) -> Dict[str, Any]:
     scratch_base_path = os.getenv("SCRATCH_PATH", "/mnt/scratch")
     scratch_path = Path(scratch_base_path) / "matriarch-vy"
     series_name = os.getenv(
