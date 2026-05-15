@@ -12,6 +12,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _secret(name: str, default: str = "") -> str:
+    """Read from Fission secret mount, fall back to env var."""
+    path = Path(f"/secrets/fission/matriarch-vy/{name}")
+    if path.exists():
+        return path.read_text().strip()
+    return os.getenv(name, default)
+
+
+def _chapter_str(chapter: float) -> str:
+    """Format chapter number as string — strip trailing .0 for integers."""
+    return str(int(chapter)) if chapter == int(chapter) else str(chapter)
+
+
 class KomgaAPIClient:
     def __init__(self, api_url: str, api_key: str, test_mode: bool = False):
         self.api_url = api_url.rstrip("/")
@@ -30,9 +43,9 @@ class KomgaAPIClient:
                 params={"search": series_name},
             )
             response.raise_for_status()
-            series_list = response.json()
+            series_list = response.json().get("content", [])
 
-            if not series_list or len(series_list) == 0:
+            if not series_list:
                 logger.error(f"Series not found: {series_name}")
                 return None
 
@@ -42,25 +55,36 @@ class KomgaAPIClient:
             logger.error(f"Error getting series ID: {e}")
             return None
 
-    def get_existing_books(self, series_id: str) -> List[int]:
+    def get_existing_books(self, series_id: str) -> List[float]:
         if self.test_mode:
             return []
 
         try:
-            response = requests.get(
-                f"{self.api_url}/api/v1/series/{series_id}/books", headers=self.headers
-            )
-            response.raise_for_status()
-            books = response.json()
-
             chapters = []
-            for book in books:
-                name = book.get("name", "")
-                match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", name)
-                if match:
-                    chapters.append(float(match.group(1)))
+            page = 0
+            while True:
+                response = requests.get(
+                    f"{self.api_url}/api/v1/series/{series_id}/books",
+                    headers=self.headers,
+                    params={"size": 500, "page": page},
+                )
+                response.raise_for_status()
+                data = response.json()
+                books = data.get("content", [])
 
-            return sorted(chapters)
+                for book in books:
+                    fname = Path(book.get("url", "")).stem
+                    for text in (fname, book.get("name", "")):
+                        match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)", text)
+                        if match:
+                            chapters.append(float(match.group(1)))
+                            break
+
+                if data.get("last", True):
+                    break
+                page += 1
+
+            return sorted(set(chapters))
 
         except Exception as e:
             logger.error(f"Error getting existing books: {e}")
@@ -71,30 +95,44 @@ class KomgaAPIClient:
             return True
 
         try:
-            if library_id:
-                url = f"{self.api_url}/api/v1/libraries/{library_id}/scan"
-            else:
-                url = f"{self.api_url}/api/v1/libraries/scan"
-
+            url = (
+                f"{self.api_url}/api/v1/libraries/{library_id}/scan"
+                if library_id
+                else f"{self.api_url}/api/v1/libraries/scan"
+            )
             response = requests.post(url, headers=self.headers)
             response.raise_for_status()
-            logger.info(f"Komga scan triggered successfully")
+            logger.info("Komga scan triggered successfully")
             return True
 
         except Exception as e:
             logger.error(f"Error triggering Komga scan: {e}")
             return False
 
-    def verify_book_imported(self, series_id: str, chapter: float) -> bool:
+    def import_books(
+        self, series_id: str, file_paths: list, copy_mode: str = "MOVE"
+    ) -> bool:
         if self.test_mode:
             return True
 
         try:
-            existing = self.get_existing_books(series_id)
-            return chapter in existing
+            payload = {
+                "books": [
+                    {"sourceFile": str(p), "seriesId": series_id} for p in file_paths
+                ],
+                "copyMode": copy_mode,
+            }
+            response = requests.post(
+                f"{self.api_url}/api/v1/books/import",
+                headers=self.headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            logger.info(f"Imported {len(file_paths)} book(s) into Komga")
+            return True
 
         except Exception as e:
-            logger.error(f"Error verifying book import: {e}")
+            logger.error(f"Error importing books into Komga: {e}")
             return False
 
 
@@ -108,42 +146,45 @@ class VyMangaScraper:
         self.session.headers.update(
             {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
             }
         )
-        self._chapter_links: Optional[Dict[int, str]] = None
+        self._chapter_map: Optional[Dict[float, str]] = None
 
-    def _fetch_chapter_links(self) -> Dict[int, str]:
+    def _fetch_chapter_map(self) -> Dict[float, str]:
         """Fetch and cache chapter number -> redirect URL mapping from the manga page."""
-        if self._chapter_links is not None:
-            return self._chapter_links
+        if self._chapter_map is not None:
+            return self._chapter_map
 
         response = self.session.get(self.base_url, timeout=30)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        links: Dict[int, str] = {}
+        chapter_map: Dict[float, str] = {}
         for link in soup.select("a.list-group-item.list-chapter"):
             link_id = str(link.get("id", ""))
             match = re.search(r"chapter-(\d+)", link_id)
             if match:
-                num = int(match.group(1))
+                num = float(match.group(1))
                 href = link.get("href")
                 if href:
-                    links[num] = str(href)
+                    chapter_map[num] = str(href)
 
-        self._chapter_links = links
-        return links
+        self._chapter_map = chapter_map
+        logger.info(f"Fetched chapter map: {len(chapter_map)} chapters")
+        return chapter_map
 
-    def _resolve_chapter_url(self, chapter: int) -> Optional[str]:
+    def get_all_chapters(self) -> List[float]:
+        """Get all chapter numbers available on VyManga."""
+        if self.test_mode:
+            return [float(i) for i in range(1, 101)]
+
         try:
-            links = self._fetch_chapter_links()
-            url = links.get(chapter)
-            if not url:
-                logger.error(f"Could not find link for Chapter {chapter}")
-            return url
+            return sorted(self._fetch_chapter_map().keys())
         except Exception as e:
-            logger.error(f"Error finding chapter {chapter} link: {e}")
-            return None
+            logger.error(f"Error getting chapters from VyManga: {e}")
+            return []
 
     def _get_highest_quality_url(self, img_url: str) -> str:
         match = re.search(r"=w\d+$", img_url)
@@ -151,34 +192,19 @@ class VyMangaScraper:
             return re.sub(r"=w\d+$", self.IMAGE_SIZE_ORIGINAL, img_url)
         return img_url
 
-    def get_latest_chapter(self) -> int:
-        if self.test_mode:
-            return 100
-
-        try:
-            links = self._fetch_chapter_links()
-            integer_chapters = list(links.keys())
-            if integer_chapters:
-                return max(integer_chapters)
-            return 0
-        except Exception as e:
-            logger.error(f"Error getting latest chapter from VyManga: {e}")
-            return 0
-
-    def download_chapter(self, chapter: int, output_path: Path) -> bool:
+    def download_chapter(self, chapter: float, output_path: Path) -> bool:
         if self.test_mode:
             return False
 
         try:
-            logger.info(f"Downloading Chapter {chapter} from VyManga")
+            chapter_map = self._fetch_chapter_map()
+            chapter_url = chapter_map.get(chapter)
 
-            chapter_url = self._resolve_chapter_url(chapter)
             if not chapter_url:
+                logger.error(f"Could not find URL for Chapter {chapter} in chapter map")
                 return False
 
-            logger.info(
-                f"Resolved chapter URL, following redirects for Chapter {chapter}"
-            )
+            logger.info(f"Downloading Chapter {chapter} from VyManga")
             response = self.session.get(chapter_url, timeout=60, allow_redirects=True)
             response.raise_for_status()
 
@@ -200,9 +226,10 @@ class VyMangaScraper:
             logger.info(f"Found {len(images)} images (original quality)")
             output_path.mkdir(parents=True, exist_ok=True)
 
-            cbz_filename = output_path / f"Chapter {chapter}.cbz"
+            cbz_filename = output_path / f"Chapter {_chapter_str(chapter)}.cbz"
 
-            with zipfile.ZipFile(cbz_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
+            tmp_filename = cbz_filename.with_suffix(".cbz.tmp")
+            with zipfile.ZipFile(tmp_filename, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for i, img_url in enumerate(images, 1):
                     try:
                         logger.info(f"Downloading image {i}/{len(images)}")
@@ -219,16 +246,21 @@ class VyMangaScraper:
                         else:
                             ext = ".jpg"
 
-                        img_data = img_response.content
-                        zipf.writestr(f"page_{i:03d}{ext}", img_data)
+                        zipf.writestr(f"page_{i:03d}{ext}", img_response.content)
                     except Exception as e:
                         logger.error(f"Error downloading image {i}: {e}")
 
-            logger.info(f"Created CBZ: {cbz_filename}")
-            logger.info(f"CBZ size: {cbz_filename.stat().st_size} bytes")
+            tmp_filename.rename(cbz_filename)
+            logger.info(
+                f"Created CBZ: {cbz_filename} ({cbz_filename.stat().st_size:,} bytes)"
+            )
             return True
+
         except Exception as e:
             logger.error(f"Error downloading Chapter {chapter}: {e}")
+            tmp = output_path / f"Chapter {_chapter_str(chapter)}.cbz.tmp"
+            if tmp.exists():
+                tmp.unlink()
             return False
 
 
@@ -238,24 +270,21 @@ class ScratchFileManager:
         self.test_mode = test_mode
         self.scratch_path.mkdir(parents=True, exist_ok=True)
 
-    def write_cbz(self, chapter: int, cbz_data: bytes) -> bool:
-        if self.test_mode:
-            return False
-
-        try:
-            cbz_filename = self.scratch_path / f"Chapter {chapter}.cbz"
-
-            with open(cbz_filename, "wb") as f:
-                f.write(cbz_data)
-
-            logger.info(f"Written to scratch: {cbz_filename}")
-            return True
-        except Exception as e:
-            logger.error(f"Error writing to scratch: {e}")
-            return False
-
-    def list_existing_files(self) -> List[Path]:
-        return list(self.scratch_path.glob("*.cbz"))
+    def recover_existing(self) -> List[float]:
+        """Find any complete CBZ files left from a previous interrupted run."""
+        recovered = []
+        for f in self.scratch_path.glob("*.cbz"):
+            match = re.search(r"Chapter\s+(\d+(?:\.\d+)?)\.cbz$", f.name)
+            if match:
+                recovered.append(float(match.group(1)))
+        if recovered:
+            logger.info(
+                f"Found {len(recovered)} pre-existing CBZ(s) in scratch to recover: {sorted(recovered)}"
+            )
+        for tmp in self.scratch_path.glob("*.cbz.tmp"):
+            logger.warning(f"Removing partial temp file: {tmp}")
+            tmp.unlink()
+        return sorted(recovered)
 
     def cleanup_file(self, filepath: Path) -> bool:
         if self.test_mode:
@@ -272,16 +301,113 @@ class ScratchFileManager:
             return False
 
 
-def _secret(name: str, default: str = "") -> str:
-    """Read from Fission secret mount at /secrets/fission/matriarch-vy/<key>,
-    falling back to environment variable."""
-    path = Path(f"/secrets/fission/matriarch-vy/{name}")
-    if path.exists():
-        return path.read_text().strip()
-    return os.getenv(name, default)
+def _run(
+    komga_client,
+    vymanga_scraper,
+    scratch_manager,
+    scratch_path,
+    series_name,
+    library_id,
+    dry_run,
+):
+    """Core workflow — fetch chapter lists, diff, download missing, import."""
+    try:
+        logger.info("Getting series ID from Komga")
+        series_id = komga_client.get_series_id(series_name)
+        if not series_id:
+            logger.error(f"Series not found: {series_name}")
+            return
+
+        logger.info(f"Series ID: {series_id}")
+        existing_chapters = set(komga_client.get_existing_books(series_id))
+        logger.info(f"Existing chapters in Komga: {len(existing_chapters)}")
+
+        available_chapters = vymanga_scraper.get_all_chapters()
+        logger.info(f"Available chapters on VyManga: {len(available_chapters)}")
+
+        missing = sorted([c for c in available_chapters if c not in existing_chapters])
+        logger.info(f"Missing chapters: {missing}")
+
+        recovered = set(scratch_manager.recover_existing())
+
+        orphaned = recovered - set(missing)
+        if orphaned:
+            logger.info(
+                f"Cleaning up {len(orphaned)} orphaned scratch file(s) already in Komga"
+            )
+            for c in orphaned:
+                scratch_manager.cleanup_file(
+                    scratch_path / f"Chapter {_chapter_str(c)}.cbz"
+                )
+
+        to_import_now = sorted(recovered & set(missing))
+        to_download = sorted([c for c in missing if c not in recovered])
+
+        if to_import_now:
+            logger.info(
+                f"Recovering {len(to_import_now)} chapter(s) from previous run: {to_import_now}"
+            )
+
+        if not missing:
+            logger.info("No missing chapters — already up to date.")
+            return
+
+        if dry_run:
+            logger.info(
+                f"DRY RUN — would download {len(to_download)} chapter(s): {to_download}"
+            )
+            if to_import_now:
+                logger.info(
+                    f"DRY RUN — would import {len(to_import_now)} recovered chapter(s): {to_import_now}"
+                )
+            return
+
+        downloaded = list(to_import_now)
+        for chapter in to_download:
+            logger.info(f"Processing Chapter {chapter}")
+            try:
+                if vymanga_scraper.download_chapter(chapter, scratch_path):
+                    downloaded.append(chapter)
+                else:
+                    logger.error(f"Failed Chapter {chapter}")
+            except Exception as e:
+                logger.error(f"Error Chapter {chapter}: {e}")
+
+        if downloaded:
+            cbz_files = [
+                scratch_path / f"Chapter {_chapter_str(c)}.cbz" for c in downloaded
+            ]
+            existing_cbz = [f for f in cbz_files if f.exists()]
+            if existing_cbz:
+                logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
+                if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
+                    logger.info(
+                        "Import accepted by Komga (async) — polling for completion"
+                    )
+                    deadline = time.time() + 300
+                    pending = list(existing_cbz)
+                    while pending and time.time() < deadline:
+                        time.sleep(3)
+                        pending = [f for f in pending if f.exists()]
+                    if pending:
+                        logger.warning(
+                            f"{len(pending)} file(s) not moved by Komga within timeout — keeping in scratch for next run"
+                        )
+                    else:
+                        logger.info("All files moved by Komga successfully")
+                else:
+                    logger.warning("Import API failed, falling back to scan")
+                    komga_client.trigger_scan(library_id)
+
+        failed = len(to_download) - (len(downloaded) - len(to_import_now))
+        logger.info(f"Done. Downloaded: {len(downloaded)}, Failed: {failed}")
+
+    except Exception as e:
+        logger.error(f"Run failed: {e}")
 
 
-def handler(event=None) -> Dict[str, Any]:
+def main() -> Dict[str, Any]:
+    """Fission entry point."""
     scratch_base_path = _secret("SCRATCH_PATH") or "/mnt/scratch"
     scratch_path = Path(scratch_base_path) / "matriarch-vy"
     series_name = (
@@ -301,125 +427,33 @@ def handler(event=None) -> Dict[str, Any]:
         _secret("TEST_MODE") or os.getenv("TEST_MODE", "false")
     ).lower() == "true"
 
-    logger.info(f"Starting Matriarch-VY update workflow")
-    logger.info(f"Series: {series_name}")
-    logger.info(f"Komga API: {komga_api_url}")
-    logger.info(f"Scratch path: {scratch_path}")
-    logger.info(f"VyManga URL: {vymanga_url}")
-    logger.info(f"Dry run: {dry_run}")
-    logger.info(f"Test mode: {test_mode}")
+    logger.info(
+        f"Starting Matriarch-VY update — series={series_name!r} scratch={scratch_path} dry_run={dry_run}"
+    )
 
     if test_mode:
-        logger.info("Test mode detected, returning early")
         return {
             "status": "success",
-            "message": "Test mode - handler logic skipped",
+            "message": "Test mode - skipped",
             "test_mode": True,
         }
 
     if not komga_api_key:
         logger.error("KOMGA_API_KEY not provided")
-        return {
-            "status": "error",
-            "message": "KOMGA_API_KEY is required",
-        }
+        return {"status": "error", "message": "KOMGA_API_KEY is required"}
 
     komga_client = KomgaAPIClient(komga_api_url, komga_api_key, test_mode=test_mode)
     vymanga_scraper = VyMangaScraper(vymanga_url, test_mode=test_mode)
     scratch_manager = ScratchFileManager(scratch_path, test_mode=test_mode)
 
-    try:
-        logger.info("Getting series ID from Komga")
-        series_id = komga_client.get_series_id(series_name)
-        if not series_id:
-            logger.error(f"Series not found: {series_name}")
-            return {"status": "error", "message": f"Series not found: {series_name}"}
+    _run(
+        komga_client,
+        vymanga_scraper,
+        scratch_manager,
+        scratch_path,
+        series_name,
+        library_id,
+        dry_run,
+    )
 
-        logger.info(f"Series ID: {series_id}")
-        logger.info("Getting existing chapters from Komga")
-        existing_chapters = komga_client.get_existing_books(series_id)
-        logger.info(f"Existing chapters: {existing_chapters}")
-
-        latest_existing = max(existing_chapters) if existing_chapters else 0
-
-        logger.info("Getting latest chapter from VyManga")
-        latest_vy = vymanga_scraper.get_latest_chapter()
-        logger.info(f"Latest VyManga chapter: {latest_vy}")
-
-        if latest_vy <= latest_existing:
-            logger.info(
-                f"No new chapters. Latest: {latest_vy}, Existing: {latest_existing}"
-            )
-            return {
-                "status": "success",
-                "message": f"No new chapters. Latest available: {latest_vy}",
-            }
-
-        chapters_to_download = range(int(latest_existing) + 1, latest_vy + 1)
-        logger.info(f"Chapters to download: {list(chapters_to_download)}")
-
-        if dry_run:
-            logger.info("DRY RUN - would download chapters but not actually doing it")
-            return {
-                "status": "success",
-                "message": f"Dry run complete. Would download {len(list(chapters_to_download))} chapters.",
-                "chapters_to_download": list(chapters_to_download),
-            }
-
-        downloaded_chapters = []
-        failed_chapters = []
-
-        for chapter in chapters_to_download:
-            logger.info(f"Processing Chapter {chapter}")
-            try:
-                success = vymanga_scraper.download_chapter(chapter, scratch_path)
-                if success:
-                    downloaded_chapters.append(chapter)
-                    logger.info(f"Successfully downloaded Chapter {chapter}")
-                else:
-                    failed_chapters.append(chapter)
-                    logger.error(f"Failed to download Chapter {chapter}")
-            except Exception as e:
-                failed_chapters.append(chapter)
-                logger.error(f"Error downloading Chapter {chapter}: {e}")
-
-        verified_chapters = []
-        if downloaded_chapters:
-            logger.info("Triggering Komga library scan")
-            scan_success = komga_client.trigger_scan(library_id)
-            if not scan_success:
-                logger.warning("Komga scan failed, but chapters were downloaded")
-
-            logger.info("Waiting a moment for Komga to process...")
-            time.sleep(5)
-
-            for chapter in downloaded_chapters:
-                if komga_client.verify_book_imported(series_id, chapter):
-                    verified_chapters.append(chapter)
-                    cbz_file = scratch_path / f"Chapter {chapter}.cbz"
-                    scratch_manager.cleanup_file(cbz_file)
-                else:
-                    logger.warning(f"Chapter {chapter} not yet verified in Komga")
-
-        logger.info(f"Downloaded: {len(downloaded_chapters)} chapters")
-        logger.info(f"Failed: {len(failed_chapters)} chapters")
-        if downloaded_chapters:
-            logger.info(f"Verified and cleaned up: {len(verified_chapters)} chapters")
-
-        return {
-            "status": "success",
-            "message": f"Completed. Downloaded {len(downloaded_chapters)}, Failed {len(failed_chapters)}",
-            "downloaded": downloaded_chapters,
-            "failed": failed_chapters,
-        }
-
-    except Exception as e:
-        logger.error(f"Handler failed with error: {e}")
-        return {
-            "status": "error",
-            "message": f"Handler failed: {str(e)}",
-        }
-
-
-# Fission entrypoint alias
-main = handler
+    return {"status": "success", "message": "Matriarch-VY update completed"}

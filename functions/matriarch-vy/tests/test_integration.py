@@ -3,11 +3,44 @@ import sys
 import tempfile
 from unittest.mock import Mock, patch, MagicMock as MockMagic
 from pathlib import Path
+import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
 
 import main as matriarch_vy_handler
+
+
+def _create_fake_cbz(path: Path, name: str):
+    path.mkdir(parents=True, exist_ok=True)
+    cbz = path / name
+    with zipfile.ZipFile(cbz, "w") as z:
+        z.writestr("page_001.jpg", b"fake")
+    return cbz
+
+
+def _make_download_side_effect(scratch_path: Path):
+    def _download(chapter, output_path, *args, **kwargs):
+        _chapter_str = matriarch_vy_handler._chapter_str
+        cbz = output_path / f"Chapter {_chapter_str(chapter)}.cbz"
+        output_path.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(cbz, "w") as z:
+            z.writestr("page_001.jpg", b"fake")
+        return True
+
+    return _download
+
+
+def _import_and_move(series_id, file_paths, *args, **kwargs):
+    for f in file_paths:
+        p = Path(f)
+        if p.exists():
+            p.unlink()
+    return True
+
+
+def _import_fail(series_id, file_paths, *args, **kwargs):
+    return False
 
 
 def test_handler_with_new_chapters():
@@ -25,6 +58,7 @@ def test_handler_with_new_chapters():
 
         with tempfile.TemporaryDirectory() as temp_dir:
             os.environ["SCRATCH_PATH"] = str(temp_dir)
+            scratch = Path(temp_dir) / "matriarch-vy"
 
             with patch.object(
                 matriarch_vy_handler.KomgaAPIClient,
@@ -48,38 +82,26 @@ def test_handler_with_new_chapters():
                         ):
                             with patch.object(
                                 matriarch_vy_handler.VyMangaScraper,
-                                "get_latest_chapter",
-                                return_value=99,
+                                "get_all_chapters",
+                                return_value=[98, 99],
                             ):
                                 with patch.object(
                                     matriarch_vy_handler.VyMangaScraper,
                                     "download_chapter",
-                                    return_value=True,
+                                    side_effect=_make_download_side_effect(scratch),
                                 ):
                                     with patch.object(
                                         matriarch_vy_handler.KomgaAPIClient,
-                                        "trigger_scan",
-                                        return_value=True,
-                                    ):
-                                        with patch.object(
-                                            matriarch_vy_handler.KomgaAPIClient,
-                                            "verify_book_imported",
-                                            return_value=True,
-                                        ):
-                                            with patch("time.sleep"):
-                                                result = matriarch_vy_handler.handler(
-                                                    {}
-                                                )
+                                        "import_books",
+                                        side_effect=_import_and_move,
+                                    ) as mock_import:
+                                        with patch("time.sleep"):
+                                            result = matriarch_vy_handler.main()
 
-                                                assert result["status"] == "success", (
-                                                    "Expected success status"
-                                                )
-                                                assert result["downloaded"] == [99], (
-                                                    f"Expected [99], got {result['downloaded']}"
-                                                )
-                                                assert result["failed"] == [], (
-                                                    f"Expected [], got {result['failed']}"
-                                                )
+                                            assert result["status"] == "success", (
+                                                "Expected success status"
+                                            )
+                                            mock_import.assert_called_once()
     finally:
         for key, value in saved_env.items():
             os.environ[key] = value
@@ -113,6 +135,12 @@ def test_handler_with_download_failures():
 
         with tempfile.TemporaryDirectory() as temp_dir:
             os.environ["SCRATCH_PATH"] = str(temp_dir)
+            scratch = Path(temp_dir) / "matriarch-vy"
+
+            def download_some(chapter, output_path, *args, **kwargs):
+                if chapter == 99.0:
+                    return False
+                return _make_download_side_effect(scratch)(chapter, output_path)
 
             with patch.object(
                 matriarch_vy_handler.KomgaAPIClient, "__init__", mock_komga_init
@@ -125,7 +153,7 @@ def test_handler_with_download_failures():
                     with patch.object(
                         matriarch_vy_handler.KomgaAPIClient,
                         "get_existing_books",
-                        return_value=[98],
+                        return_value=[97],
                     ):
                         with patch.object(
                             matriarch_vy_handler.VyMangaScraper,
@@ -134,25 +162,29 @@ def test_handler_with_download_failures():
                         ):
                             with patch.object(
                                 matriarch_vy_handler.VyMangaScraper,
-                                "get_latest_chapter",
-                                return_value=100,
+                                "get_all_chapters",
+                                return_value=[97, 98, 99, 100],
                             ):
                                 with patch.object(
                                     matriarch_vy_handler.VyMangaScraper,
                                     "download_chapter",
-                                    side_effect=[True, False, True],
+                                    side_effect=download_some,
                                 ):
-                                    result = matriarch_vy_handler.handler({})
+                                    with patch.object(
+                                        matriarch_vy_handler.KomgaAPIClient,
+                                        "import_books",
+                                        side_effect=_import_and_move,
+                                    ) as mock_import:
+                                        result = matriarch_vy_handler.main()
 
-                                    assert result["status"] == "success", (
-                                        "Expected success status"
-                                    )
-                                    assert 99 in result["downloaded"], (
-                                        "Expected 99 in downloaded"
-                                    )
-                                    assert 100 in result["failed"], (
-                                        "Expected 100 in failed"
-                                    )
+                                        assert result["status"] == "success", (
+                                            "Expected success status"
+                                        )
+                                        mock_import.assert_called_once()
+                                        imported_files = mock_import.call_args[0][1]
+                                        assert len(imported_files) == 2, (
+                                            f"Expected 2 imported files (98 and 100 succeeded), got {len(imported_files)}"
+                                        )
     finally:
         for key, value in saved_env.items():
             os.environ[key] = value
@@ -161,7 +193,7 @@ def test_handler_with_download_failures():
                 del os.environ[key]
 
 
-def test_handler_with_partial_verification():
+def test_handler_recovers_existing_cbz():
     saved_env = {}
     for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
         if key in os.environ:
@@ -175,7 +207,10 @@ def test_handler_with_partial_verification():
             del os.environ["TEST_MODE"]
 
         with tempfile.TemporaryDirectory() as temp_dir:
+            scratch = Path(temp_dir) / "matriarch-vy"
             os.environ["SCRATCH_PATH"] = str(temp_dir)
+
+            _create_fake_cbz(scratch, "Chapter 99.cbz")
 
             with patch.object(
                 matriarch_vy_handler.KomgaAPIClient,
@@ -199,42 +234,106 @@ def test_handler_with_partial_verification():
                         ):
                             with patch.object(
                                 matriarch_vy_handler.VyMangaScraper,
-                                "get_latest_chapter",
-                                return_value=100,
+                                "get_all_chapters",
+                                return_value=[98, 99, 100],
                             ):
                                 with patch.object(
                                     matriarch_vy_handler.VyMangaScraper,
                                     "download_chapter",
-                                    return_value=True,
+                                    side_effect=_make_download_side_effect(scratch),
                                 ):
                                     with patch.object(
                                         matriarch_vy_handler.KomgaAPIClient,
-                                        "trigger_scan",
-                                        return_value=True,
-                                    ):
-                                        with patch.object(
-                                            matriarch_vy_handler.KomgaAPIClient,
-                                            "verify_book_imported",
-                                            side_effect=[True, False, True],
-                                        ):
-                                            with patch("time.sleep"):
-                                                result = matriarch_vy_handler.handler(
-                                                    {}
-                                                )
+                                        "import_books",
+                                        side_effect=_import_and_move,
+                                    ) as mock_import:
+                                        with patch("time.sleep"):
+                                            result = matriarch_vy_handler.main()
 
-                                                assert result["status"] == "success", (
-                                                    "Expected success status"
-                                                )
-                                                assert result["downloaded"] == [
-                                                    99,
-                                                    100,
-                                                ], (
-                                                    f"Expected [99, 100], got {result['downloaded']}"
-                                                )
+                                            assert result["status"] == "success"
+                                            mock_import.assert_called_once()
+                                            imported_files = mock_import.call_args[0][1]
+                                            assert len(imported_files) == 2
     finally:
         for key, value in saved_env.items():
             os.environ[key] = value
         for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
+            if key not in saved_env and key in os.environ:
+                del os.environ[key]
+
+
+def test_handler_import_fallback_to_scan():
+    saved_env = {}
+    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
+        if key in os.environ:
+            saved_env[key] = os.environ[key]
+
+    try:
+        os.environ["SERIES_NAME"] = "Test Series"
+        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
+        os.environ["KOMGA_API_KEY"] = "test-key-12345"
+        os.environ["KOMGA_LIBRARY_ID"] = "test-lib-id"
+        if "TEST_MODE" in os.environ:
+            del os.environ["TEST_MODE"]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.environ["SCRATCH_PATH"] = str(temp_dir)
+            scratch = Path(temp_dir) / "matriarch-vy"
+
+            with patch.object(
+                matriarch_vy_handler.KomgaAPIClient,
+                "__init__",
+                lambda self, url, key, test_mode=False: None,
+            ):
+                with patch.object(
+                    matriarch_vy_handler.KomgaAPIClient,
+                    "get_series_id",
+                    return_value="test-series-id",
+                ):
+                    with patch.object(
+                        matriarch_vy_handler.KomgaAPIClient,
+                        "get_existing_books",
+                        return_value=[98],
+                    ):
+                        with patch.object(
+                            matriarch_vy_handler.VyMangaScraper,
+                            "__init__",
+                            lambda self, url, test_mode=False: None,
+                        ):
+                            with patch.object(
+                                matriarch_vy_handler.VyMangaScraper,
+                                "get_all_chapters",
+                                return_value=[98, 99],
+                            ):
+                                with patch.object(
+                                    matriarch_vy_handler.VyMangaScraper,
+                                    "download_chapter",
+                                    side_effect=_make_download_side_effect(scratch),
+                                ):
+                                    with patch.object(
+                                        matriarch_vy_handler.KomgaAPIClient,
+                                        "import_books",
+                                        side_effect=_import_fail,
+                                    ):
+                                        with patch.object(
+                                            matriarch_vy_handler.KomgaAPIClient,
+                                            "trigger_scan",
+                                            return_value=True,
+                                        ) as mock_scan:
+                                            result = matriarch_vy_handler.main()
+
+                                            assert result["status"] == "success"
+                                            mock_scan.assert_called_once()
+    finally:
+        for key, value in saved_env.items():
+            os.environ[key] = value
+        for key in [
+            "SERIES_NAME",
+            "KOMGA_API_URL",
+            "KOMGA_API_KEY",
+            "KOMGA_LIBRARY_ID",
+            "SCRATCH_PATH",
+        ]:
             if key not in saved_env and key in os.environ:
                 del os.environ[key]
 
@@ -255,38 +354,11 @@ def test_vymanga_scraper_error_handling():
         "https://example.com", test_mode=False
     )
 
-    with patch("requests.Session.get") as mock_get:
-        mock_get.side_effect = Exception("Network error")
-        latest = scraper.get_latest_chapter()
-        assert latest == 0, "Expected 0 on error"
-
-
-def test_scratch_file_manager_write_cbz_success():
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
-
-        cbz_data = b"fake cbz data"
-        result = manager.write_cbz(100, cbz_data)
-
-        assert result is True, "Expected True on successful write"
-        expected_file = scratch_path / "Chapter 100.cbz"
-        assert expected_file.exists(), "CBZ file should exist"
-        assert expected_file.read_bytes() == cbz_data, "CBZ data should match"
-
-
-def test_scratch_file_manager_error_handling():
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir) / "readonly"
-        scratch_path.mkdir()
-        scratch_path.chmod(0o444)
-
-        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
-
-        result = manager.write_cbz(100, b"test")
-        assert result is False, "Expected False on write error"
-
-        scratch_path.chmod(0o755)
+    with patch.object(
+        scraper, "_fetch_chapter_map", side_effect=Exception("Network error")
+    ):
+        chapters = scraper.get_all_chapters()
+        assert chapters == [], "Expected empty list on error"
 
 
 def test_handler_integration_full_workflow():
@@ -304,6 +376,7 @@ def test_handler_integration_full_workflow():
 
         with tempfile.TemporaryDirectory() as temp_dir:
             os.environ["SCRATCH_PATH"] = str(temp_dir)
+            scratch = Path(temp_dir) / "matriarch-vy"
 
             with patch.object(
                 matriarch_vy_handler.KomgaAPIClient,
@@ -327,32 +400,26 @@ def test_handler_integration_full_workflow():
                         ):
                             with patch.object(
                                 matriarch_vy_handler.VyMangaScraper,
-                                "get_latest_chapter",
-                                return_value=2,
+                                "get_all_chapters",
+                                return_value=[1.0, 2.0],
                             ):
                                 with patch.object(
                                     matriarch_vy_handler.VyMangaScraper,
                                     "download_chapter",
-                                    return_value=True,
+                                    side_effect=_make_download_side_effect(scratch),
                                 ):
                                     with patch.object(
                                         matriarch_vy_handler.KomgaAPIClient,
-                                        "trigger_scan",
-                                        return_value=True,
-                                    ):
-                                        with patch.object(
-                                            matriarch_vy_handler.KomgaAPIClient,
-                                            "verify_book_imported",
-                                            return_value=True,
-                                        ):
-                                            with patch("time.sleep"):
-                                                result = matriarch_vy_handler.handler(
-                                                    {}
-                                                )
+                                        "import_books",
+                                        side_effect=_import_and_move,
+                                    ) as mock_import:
+                                        with patch("time.sleep"):
+                                            result = matriarch_vy_handler.main()
 
-                                                assert result["status"] == "success"
-                                                assert result["downloaded"] == [1, 2]
-                                                assert result["failed"] == []
+                                            assert result["status"] == "success"
+                                            mock_import.assert_called_once()
+                                            imported_files = mock_import.call_args[0][1]
+                                            assert len(imported_files) == 2
     finally:
         for key, value in saved_env.items():
             os.environ[key] = value

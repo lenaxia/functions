@@ -19,7 +19,7 @@ def test_handler_success():
             os.environ["SCRATCH_PATH"] = str(temp_dir)
             os.environ["TEST_MODE"] = "true"
 
-            result = matriarch_vy_handler.handler({})
+            result = matriarch_vy_handler.main()
 
             assert result["status"] == "success", (
                 f"Expected success, got {result['status']}"
@@ -48,7 +48,7 @@ def test_missing_api_key():
         if "TEST_MODE" in os.environ:
             del os.environ["TEST_MODE"]
 
-        result = matriarch_vy_handler.handler({})
+        result = matriarch_vy_handler.main()
 
         assert result["status"] == "error", "Expected error status"
         assert "KOMGA_API_KEY" in result["message"], "Expected API key error message"

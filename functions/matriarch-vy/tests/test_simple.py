@@ -34,7 +34,7 @@ def test_handler_initializes_correctly():
         with tempfile.TemporaryDirectory() as temp_dir:
             os.environ["SCRATCH_PATH"] = str(temp_dir)
 
-            result = matriarch_vy_handler.handler({})
+            result = matriarch_vy_handler.main()
 
             assert result["status"] == "success", f"Expected success"
             assert "message" in result
@@ -67,7 +67,7 @@ def test_handler_with_api_key():
         os.environ["KOMGA_API_KEY"] = "test-key-12345"
         os.environ["TEST_MODE"] = "true"
 
-        result = matriarch_vy_handler.handler({})
+        result = matriarch_vy_handler.main()
 
         assert result["status"] == "success", "Expected success status"
         assert result["test_mode"] == True

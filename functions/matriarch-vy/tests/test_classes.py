@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import zipfile
 from unittest.mock import Mock, patch, MagicMock as MockMagic
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def test_komga_api_get_series_id_not_found():
 
     with patch("requests.get") as mock_get:
         mock_response = Mock()
-        mock_response.json.return_value = []
+        mock_response.json.return_value = {"content": [], "last": True}
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
@@ -68,12 +69,15 @@ def test_komga_api_get_existing_books_with_chapters():
 
     with patch("requests.get") as mock_get:
         mock_response = Mock()
-        mock_response.json.return_value = [
-            {"name": "Chapter 1"},
-            {"name": "Chapter 2"},
-            {"name": "Chapter 3.5"},
-            {"name": "Other Book"},
-        ]
+        mock_response.json.return_value = {
+            "content": [
+                {"name": "Chapter 1", "url": ""},
+                {"name": "Chapter 2", "url": ""},
+                {"name": "Chapter 3.5", "url": ""},
+                {"name": "Other Book", "url": ""},
+            ],
+            "last": True,
+        }
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
@@ -93,35 +97,34 @@ def test_komga_api_trigger_scan():
     assert result is True, "Expected True for test mode"
 
 
-def test_komga_api_verify_book_imported():
+def test_komga_api_import_books():
     client = matriarch_vy_handler.KomgaAPIClient(
         "http://komga.example.com", "test-key", test_mode=True
     )
 
-    result = client.verify_book_imported("test-series-id", 100)
+    result = client.import_books("test-series-id", ["/tmp/test.cbz"])
     assert result is True, "Expected True for test mode"
 
 
-def test_vymanga_scraper_get_latest_chapter():
+def test_vymanga_scraper_get_all_chapters():
     scraper = matriarch_vy_handler.VyMangaScraper("https://example.com", test_mode=True)
 
-    latest = scraper.get_latest_chapter()
-    assert latest == 100, f"Expected 100, got {latest}"
+    chapters = scraper.get_all_chapters()
+    assert len(chapters) == 100, f"Expected 100 chapters, got {len(chapters)}"
+    assert chapters[0] == 1.0
+    assert chapters[-1] == 100.0
 
 
-def test_vymanga_scraper_get_latest_chapter_no_chapters():
+def test_vymanga_scraper_get_all_chapters_error():
     scraper = matriarch_vy_handler.VyMangaScraper(
         "https://example.com", test_mode=False
     )
 
-    with patch("requests.Session.get") as mock_get:
-        mock_response = Mock()
-        mock_response.raise_for_status = Mock()
-        mock_response.text = "<div class='list'></div>"
-        mock_get.return_value = mock_response
-
-        latest = scraper.get_latest_chapter()
-        assert latest == 0, "Expected 0 when no chapters found"
+    with patch.object(
+        scraper, "_fetch_chapter_map", side_effect=Exception("Network error")
+    ):
+        chapters = scraper.get_all_chapters()
+        assert chapters == [], "Expected empty list on error"
 
 
 def test_vymanga_scraper_download_chapter_test_mode():
@@ -156,26 +159,23 @@ def test_scratch_file_manager_init():
         assert scratch_path.exists(), "Scratch directory should be created"
 
 
-def test_scratch_file_manager_write_cbz_test_mode():
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=True)
-
-        result = manager.write_cbz(100, b"fake cbz data")
-        assert result is False, "Expected False for test mode"
-
-
-def test_scratch_file_manager_list_existing_files():
+def test_scratch_file_manager_recover_existing():
     with tempfile.TemporaryDirectory() as temp_dir:
         scratch_path = Path(temp_dir)
         manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
 
         (scratch_path / "Chapter 100.cbz").write_bytes(b"test")
         (scratch_path / "Chapter 101.cbz").write_bytes(b"test")
+        (scratch_path / "Chapter 102.cbz.tmp").write_bytes(b"partial")
         (scratch_path / "other.txt").write_bytes(b"test")
 
-        files = manager.list_existing_files()
-        assert len(files) == 2, f"Expected 2 files, got {len(files)}"
+        recovered = manager.recover_existing()
+        assert len(recovered) == 2, f"Expected 2 chapters, got {len(recovered)}"
+        assert 100.0 in recovered
+        assert 101.0 in recovered
+        assert not (scratch_path / "Chapter 102.cbz.tmp").exists(), (
+            "Temp file should be cleaned"
+        )
 
 
 def test_scratch_file_manager_cleanup_file():
@@ -201,222 +201,156 @@ def test_scratch_file_manager_cleanup_file_not_exists():
         assert result is False, "Expected False when file doesn't exist"
 
 
-def test_handler_series_not_found():
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_run_series_not_found():
+    komga = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
+    scraper = matriarch_vy_handler.VyMangaScraper(
+        "https://example.com", test_mode=False
+    )
 
-    try:
-        os.environ["SERIES_NAME"] = "Non-existent Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        scratch_path = Path(temp_dir)
+        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
+        with patch.object(komga, "get_series_id", return_value=None):
+            matriarch_vy_handler._run(
+                komga, scraper, manager, scratch_path, "Test Series", "lib-id", False
+            )
 
+
+def test_run_no_missing_chapters():
+    komga = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
+    scraper = matriarch_vy_handler.VyMangaScraper(
+        "https://example.com", test_mode=False
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        scratch_path = Path(temp_dir)
+        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
+
+        with patch.object(komga, "get_series_id", return_value="series-1"):
             with patch.object(
-                matriarch_vy_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
+                komga, "get_existing_books", return_value=[1.0, 2.0, 3.0]
             ):
                 with patch.object(
-                    matriarch_vy_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value=None,
+                    scraper, "get_all_chapters", return_value=[1.0, 2.0, 3.0]
                 ):
-                    result = matriarch_vy_handler.handler({})
-
-                    assert result["status"] == "error", "Expected error status"
-                    assert "not found" in result["message"].lower(), (
-                        "Expected 'not found' in message"
+                    matriarch_vy_handler._run(
+                        komga, scraper, manager, scratch_path, "Test", "lib-id", False
                     )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
 
 
-def test_handler_no_new_chapters():
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_run_dry_run():
+    komga = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
+    scraper = matriarch_vy_handler.VyMangaScraper(
+        "https://example.com", test_mode=False
+    )
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        scratch_path = Path(temp_dir)
+        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_vy_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
+        with patch.object(komga, "get_series_id", return_value="series-1"):
+            with patch.object(komga, "get_existing_books", return_value=[2.0]):
                 with patch.object(
-                    matriarch_vy_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
+                    scraper, "get_all_chapters", return_value=[1.0, 2.0, 3.0]
                 ):
+                    matriarch_vy_handler._run(
+                        komga, scraper, manager, scratch_path, "Test", "lib-id", True
+                    )
+
+
+def _make_download_side_effect(scratch_path: Path):
+    def _download(chapter, output_path, *args, **kwargs):
+        _cs = matriarch_vy_handler._chapter_str
+        cbz = output_path / f"Chapter {_cs(chapter)}.cbz"
+        output_path.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(cbz, "w") as z:
+            z.writestr("page_001.jpg", b"fake")
+        return True
+
+    return _download
+
+
+def _import_and_move(series_id, file_paths, *args, **kwargs):
+    for f in file_paths:
+        p = Path(f)
+        if p.exists():
+            p.unlink()
+    return True
+
+
+def test_run_downloads_and_imports():
+    komga = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
+    scraper = matriarch_vy_handler.VyMangaScraper(
+        "https://example.com", test_mode=False
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        scratch_path = Path(temp_dir)
+        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
+
+        with patch.object(komga, "get_series_id", return_value="series-1"):
+            with patch.object(komga, "get_existing_books", return_value=[1.0]):
+                with patch.object(scraper, "get_all_chapters", return_value=[1.0, 2.0]):
                     with patch.object(
-                        matriarch_vy_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[100, 99, 98],
+                        scraper,
+                        "download_chapter",
+                        side_effect=_make_download_side_effect(scratch_path),
                     ):
                         with patch.object(
-                            matriarch_vy_handler.VyMangaScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_vy_handler.VyMangaScraper,
-                                "get_latest_chapter",
-                                return_value=100,
-                            ):
-                                result = matriarch_vy_handler.handler({})
-
-                                assert result["status"] == "success", (
-                                    "Expected success status"
+                            komga, "import_books", side_effect=_import_and_move
+                        ) as mock_import:
+                            with patch("time.sleep"):
+                                matriarch_vy_handler._run(
+                                    komga,
+                                    scraper,
+                                    manager,
+                                    scratch_path,
+                                    "Test",
+                                    "lib-id",
+                                    False,
                                 )
-                                assert (
-                                    "no new chapters" in result["message"].lower()
-                                    or "Latest available" in result["message"]
-                                ), (
-                                    f"Expected 'no new chapters' message, got: {result['message']}"
-                                )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+
+                                mock_import.assert_called_once()
+                                call_args = mock_import.call_args
+                                assert call_args[0][0] == "series-1"
+                                assert len(call_args[0][1]) == 1
 
 
-def test_handler_dry_run():
-    saved_env = {}
-    for key in [
-        "SERIES_NAME",
-        "KOMGA_API_URL",
-        "KOMGA_API_KEY",
-        "DRY_RUN",
-        "TEST_MODE",
-    ]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_run_exception_handling():
+    komga = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
+    scraper = matriarch_vy_handler.VyMangaScraper(
+        "https://example.com", test_mode=False
+    )
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        os.environ["DRY_RUN"] = "true"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
+    with tempfile.TemporaryDirectory() as temp_dir:
+        scratch_path = Path(temp_dir)
+        manager = matriarch_vy_handler.ScratchFileManager(scratch_path, test_mode=False)
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_vy_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_vy_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_vy_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[98],
-                    ):
-                        with patch.object(
-                            matriarch_vy_handler.VyMangaScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_vy_handler.VyMangaScraper,
-                                "get_latest_chapter",
-                                return_value=101,
-                            ):
-                                result = matriarch_vy_handler.handler({})
-
-                                assert result["status"] == "success", (
-                                    "Expected success status"
-                                )
-                                assert "dry run" in result["message"].lower(), (
-                                    "Expected 'dry run' in message"
-                                )
-                                assert "chapters_to_download" in result, (
-                                    "Expected chapters_to_download in result"
-                                )
-                                assert result["chapters_to_download"] == [
-                                    99,
-                                    100,
-                                    101,
-                                ], (
-                                    f"Expected [99, 100, 101], got {result['chapters_to_download']}"
-                                )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in [
-            "SERIES_NAME",
-            "KOMGA_API_URL",
-            "KOMGA_API_KEY",
-            "DRY_RUN",
-            "SCRATCH_PATH",
-        ]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+        with patch.object(
+            komga, "get_series_id", side_effect=Exception("Test exception")
+        ):
+            matriarch_vy_handler._run(
+                komga, scraper, manager, scratch_path, "Test", "lib-id", False
+            )
 
 
-def test_handler_exception_handling():
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_komga_api_error_handling():
+    client = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_vy_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_vy_handler.KomgaAPIClient,
-                    "get_series_id",
-                    side_effect=Exception("Test exception"),
-                ):
-                    result = matriarch_vy_handler.handler({})
-
-                    assert result["status"] == "error", "Expected error status"
-                    assert (
-                        "failed" in result["message"].lower()
-                        or "Test exception" in result["message"]
-                    ), f"Expected error message, got: {result['message']}"
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    with patch("requests.get") as mock_get:
+        mock_get.side_effect = Exception("Network error")
+        series_id = client.get_series_id("Test Series")
+        assert series_id is None, "Expected None on error"
