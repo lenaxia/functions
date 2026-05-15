@@ -22,6 +22,7 @@ jobs:
       function-exists: ${{ steps.function-exists.outputs.exists }}
       environment: ${{ steps.function-options.outputs.environment }}
       language: ${{ steps.function-options.outputs.language }}
+      language-version: ${{ steps.function-options.outputs.language-version }}
       runtime: ${{ steps.function-options.outputs.runtime }}
     steps:
       - name: Checkout
@@ -77,7 +78,7 @@ jobs:
         if: needs.prepare.outputs.language == 'python'
         uses: actions/setup-python@v5.3.0
         with:
-          python-version: ${{ needs.prepare.outputs.runtime }}
+          python-version: ${{ needs.prepare.outputs.language-version }}
           cache: pip
           cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
 
@@ -85,7 +86,7 @@ jobs:
         if: needs.prepare.outputs.language == 'node'
         uses: actions/setup-node@v4.1.0
         with:
-          node-version: ${{ needs.prepare.outputs.runtime }}
+          node-version: ${{ needs.prepare.outputs.language-version }}
           cache: npm
           cache-dependency-path: ./functions/${{ inputs.function }}/package.json
 
@@ -93,7 +94,7 @@ jobs:
         if: needs.prepare.outputs.language == 'go'
         uses: actions/setup-go@v5.2.0
         with:
-          go-version: ${{ needs.prepare.outputs.runtime }}
+          go-version: ${{ needs.prepare.outputs.language-version }}
           cache: true
           cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
@@ -163,7 +164,7 @@ jobs:
         with:
           function: ${{ inputs.function }}
           language: ${{ needs.prepare.outputs.language }}
-          runtime: ${{ needs.prepare.outputs.runtime }}
+          language-version: ${{ needs.prepare.outputs.language-version }}
 
       - if: ${{ inputs.release }}
         name: Upload Release Asset

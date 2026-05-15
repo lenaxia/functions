@@ -10,8 +10,8 @@ inputs:
   language:
     description: Programming language (python, node, go)
     required: true
-  runtime:
-    description: Runtime version (e.g. 3.11, 20, 1.21)
+  language-version:
+    description: Numeric language version (e.g. 3.11, 20, 1.21)
     required: true
 
 runs:
@@ -21,7 +21,7 @@ runs:
       if: inputs.language == 'python'
       uses: actions/setup-python@v5.3.0
       with:
-        python-version: ${{ inputs.runtime }}
+        python-version: ${{ inputs.language-version }}
         cache: pip
         cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
 
@@ -29,7 +29,7 @@ runs:
       if: inputs.language == 'node'
       uses: actions/setup-node@v4.1.0
       with:
-        node-version: ${{ inputs.runtime }}
+        node-version: ${{ inputs.language-version }}
         cache: npm
         cache-dependency-path: ./functions/${{ inputs.function }}/package.json
 
@@ -37,7 +37,7 @@ runs:
       if: inputs.language == 'go'
       uses: actions/setup-go@v5.2.0
       with:
-        go-version: ${{ inputs.runtime }}
+        go-version: ${{ inputs.language-version }}
         cache: true
         cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
