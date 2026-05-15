@@ -272,23 +272,34 @@ class ScratchFileManager:
             return False
 
 
+def _secret(name: str, default: str = "") -> str:
+    """Read from Fission secret mount at /secrets/fission/matriarch-vy/<key>,
+    falling back to environment variable."""
+    path = Path(f"/secrets/fission/matriarch-vy/{name}")
+    if path.exists():
+        return path.read_text().strip()
+    return os.getenv(name, default)
+
+
 def handler(event=None) -> Dict[str, Any]:
-    scratch_base_path = os.getenv("SCRATCH_PATH", "/mnt/scratch")
+    scratch_base_path = _secret("SCRATCH_PATH") or "/mnt/scratch"
     scratch_path = Path(scratch_base_path) / "matriarch-vy"
-    series_name = os.getenv(
-        "SERIES_NAME", "I'll Be The Matriarch In This Life (VyManga)"
+    series_name = (
+        _secret("SERIES_NAME") or "I'll Be The Matriarch In This Life (VyManga)"
     )
-    komga_api_url = os.getenv(
-        "KOMGA_API_URL", "http://komga.media.svc.cluster.local:8080"
+    komga_api_url = (
+        _secret("KOMGA_API_URL") or "http://komga.media.svc.cluster.local:8080"
     )
-    komga_api_key = os.getenv("KOMGA_API_KEY", "")
-    library_id = os.getenv("KOMGA_LIBRARY_ID", "")
-    vymanga_url = os.getenv(
-        "VYMANGA_URL",
-        "https://vymanga.com/manga/ill-be-the-matriarch-in-this-life-9+++es5l",
+    komga_api_key = _secret("KOMGA_API_KEY")
+    library_id = _secret("KOMGA_LIBRARY_ID")
+    vymanga_url = (
+        _secret("VYMANGA_URL")
+        or "https://vymanga.com/manga/ill-be-the-matriarch-in-this-life-9+++es5l"
     )
-    dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
-    test_mode = os.getenv("TEST_MODE", "false").lower() == "true"
+    dry_run = (_secret("DRY_RUN") or os.getenv("DRY_RUN", "false")).lower() == "true"
+    test_mode = (
+        _secret("TEST_MODE") or os.getenv("TEST_MODE", "false")
+    ).lower() == "true"
 
     logger.info(f"Starting Matriarch-VY update workflow")
     logger.info(f"Series: {series_name}")
