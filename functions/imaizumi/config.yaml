@@ -1,0 +1,5 @@
+environment: python3-manga-updater
+language: python
+runtime: "3.11"
+version: "1.0.0"
+source: https://github.com/lenaxia/functions
