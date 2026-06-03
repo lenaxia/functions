@@ -1,0 +1,41 @@
+---
+# Custom Python Fission environment with Chromium pre-installed.
+# Used by the job-scraper-snowflake function to bypass PerimeterX bot
+# protection on careers.snowflake.com.
+#
+# Image is built from envs/python3-playwright/Dockerfile in the
+# https://github.com/lenaxia/functions repo and pinned by tag here.
+# Bumping the tag requires a matching playwright SDK pin in the
+# function's requirements.txt.
+apiVersion: fission.io/v1
+kind: Environment
+metadata:
+  name: python3-playwright
+  namespace: fission
+spec:
+  version: 3
+  runtime:
+    image: ghcr.io/lenaxia/fission-python3-playwright:1.46.0
+    podspec:
+      containers:
+        - name: python3-playwright
+          # Chromium needs more than the default tiny shm to render pages.
+          # /dev/shm too small causes "Failed to create proxy for service
+          # org.freedesktop.DBus" and similar Chromium spawn failures.
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+  builder:
+    image: ghcr.io/lenaxia/fission-python3-playwright:1.46.0
+    command: build
