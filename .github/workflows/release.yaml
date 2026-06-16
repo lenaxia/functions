@@ -56,7 +56,7 @@ jobs:
           fi
 
   build:
-    if: ${{ needs.changed.outputs.functions != '[]' }}
+    if: ${{ !cancelled() && needs.changed.result == 'success' && needs.changed.outputs.functions != '[]' }}
     needs: ["changed"]
     name: Build ${{ matrix.function }}
     uses: ./.github/workflows/function-builder.yaml
@@ -75,14 +75,27 @@ jobs:
 
   status:
     if: ${{ !cancelled() }}
-    needs: ["build"]
+    needs: ["changed", "build"]
     runs-on: ubuntu-latest
     steps:
-      - name: Any build jobs failed?
-        if: ${{ needs.build.result == 'failure' }}
-        run: exit 1
-
-      - name: All jobs passed or skipped?
-        if: ${{ needs.build.result != 'failure' && needs.build.result != 'skipped' }}
-        run: echo "All build jobs passed or skipped" && echo "${{ toJSON(needs.build.result) }}"
-        continue-on-error: true
+      - name: Check for failures
+        run: |
+          if [ "${{ needs.changed.result }}" == "failure" ]; then
+            echo "Changed job failed"
+            exit 1
+          fi
+          if [ "${{ needs.build.result }}" == "failure" ]; then
+            echo "Build job failed"
+            exit 1
+          fi
+          if [ "${{ needs.build.result }}" == "skipped" ] && [ "${{ needs.changed.result }}" == "success" ]; then
+            echo "Build was skipped but changed succeeded - this means no functions to build"
+            exit 0
+          fi
+          if [ "${{ needs.build.result }}" == "success" ]; then
+            echo "All jobs completed successfully"
+            exit 0
+          fi
+          echo "Unexpected job state"
+          echo "Changed: ${{ needs.changed.result }}"
+          echo "Build: ${{ needs.build.result }}"
