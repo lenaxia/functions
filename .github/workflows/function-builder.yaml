@@ -75,31 +75,31 @@ jobs:
           upstream-version: ${{ steps.function-options.outputs.version }}
 
       - name: Setup Python
-        if: needs.prepare.outputs.language == 'python'
+        if: steps.function-options.outputs.language == 'python'
         uses: actions/setup-python@v5.3.0
         with:
-          python-version: ${{ needs.prepare.outputs.language-version }}
+          python-version: ${{ steps.function-options.outputs.language-version }}
           cache: pip
           cache-dependency-path: ./functions/${{ inputs.function }}/requirements.txt
 
       - name: Setup Node.js
-        if: needs.prepare.outputs.language == 'node'
+        if: steps.function-options.outputs.language == 'node'
         uses: actions/setup-node@v4.1.0
         with:
-          node-version: ${{ needs.prepare.outputs.language-version }}
+          node-version: ${{ steps.function-options.outputs.language-version }}
           cache: npm
           cache-dependency-path: ./functions/${{ inputs.function }}/package.json
 
       - name: Setup Go
-        if: needs.prepare.outputs.language == 'go'
+        if: steps.function-options.outputs.language == 'go'
         uses: actions/setup-go@v5.2.0
         with:
-          go-version: ${{ needs.prepare.outputs.language-version }}
+          go-version: ${{ steps.function-options.outputs.language-version }}
           cache: true
           cache-dependency-path: ./functions/${{ inputs.function }}/go.sum
 
       - name: Install Dependencies (Python)
-        if: needs.prepare.outputs.language == 'python'
+        if: steps.function-options.outputs.language == 'python'
         shell: bash
         run: |
           if [ -f "./functions/${{ inputs.function }}/requirements.txt" ]; then
@@ -107,7 +107,7 @@ jobs:
           fi
 
       - name: Install Dependencies (Node.js)
-        if: needs.prepare.outputs.language == 'node'
+        if: steps.function-options.outputs.language == 'node'
         shell: bash
         run: |
           if [ -f "./functions/${{ inputs.function }}/package.json" ]; then
@@ -118,7 +118,7 @@ jobs:
           fi
 
       - name: Install Dependencies (Go)
-        if: needs.prepare.outputs.language == 'go'
+        if: steps.function-options.outputs.language == 'go'
         shell: bash
         run: |
           if [ -f "./functions/${{ inputs.function }}/go.mod" ]; then
@@ -163,8 +163,8 @@ jobs:
         uses: ./.github/actions/function-tests
         with:
           function: ${{ inputs.function }}
-          language: ${{ needs.prepare.outputs.language }}
-          language-version: ${{ needs.prepare.outputs.language-version }}
+          language: ${{ steps.function-options.outputs.language }}
+          language-version: ${{ steps.function-options.outputs.language-version }}
 
       - if: ${{ inputs.release }}
         name: Upload Release Asset
