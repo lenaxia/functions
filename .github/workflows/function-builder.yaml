@@ -221,12 +221,3 @@ jobs:
           tag: ${{ steps.release.outputs.tag }}
           token: ${{ github.token }}
           artifacts: ${{ runner.temp }}/${{ inputs.function }}-*.zip
-          # Force-mark every release as "latest". Without this, GitHub's
-          # default `makeLatest: legacy` picks the latest valid-SemVer
-          # release by created_at — but our zero-padded calver tags
-          # (e.g. 2026.06.09) violate SemVer (leading zeros forbidden) so
-          # they're excluded from latest consideration. Setting makeLatest:
-          # true makes GitHub mark each new release as latest unconditionally,
-          # which keeps the `latest/download/<name>-<ver>.zip` URLs pointing
-          # at the most recent release.
-          makeLatest: "true"

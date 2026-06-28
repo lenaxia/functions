@@ -2,12 +2,13 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-action.json
 name: Release Tag
 description: >
-  Generates the next release tag in `YYYY.MM.PATCH` format with zero-padded
-  MM and PATCH components so tags sort lexicographically. PATCH is a
-  sequential counter within the current calendar month (NOT the day of the
-  month) — it increments on every release and resets to 00 when the month
-  rolls over. Example: 2026.06.08 is the 9th release of June 2026,
-  regardless of which day in June it was cut.
+  Generates the next release tag in `YYYY.MM.PATCH` format. PATCH is a
+  sequential counter within the current calendar month (NOT the day of
+  the month) — it increments on every release and resets to 0 when the
+  month rolls over. Example: 2026.6.8 is the 9th release of June 2026,
+  regardless of which day in June it was cut. Tags follow SemVer rules
+  (no leading zeros) so GitHub's /releases/latest auto-determination
+  works without explicit makeLatest overrides.
 
 inputs:
   token:
@@ -37,28 +38,15 @@ runs:
               per_page: 1,
           });
 
-          // Parse the previous tag. Number() drops leading zeros, so the
-          // comparison below must be done on freshly-padded strings on
-          // both sides — historical unpadded tags (e.g. '2026.6.8') and
-          // new padded tags (e.g. '2026.06.08') both parse to the same
-          // numbers and produce the same padded string here.
           const prevTag = releases[0]?.tag_name || "0.0.0";
           const [prevMajor, prevMinor, prevPatch] = prevTag.split('.').map(Number);
-
           const now = new Date();
           // getMonth() is 0-indexed; +1 yields the 1-12 calendar month.
-          const nextYear = now.getFullYear();
-          const nextMonth = now.getMonth() + 1;
+          const nextMajorMinor = `${now.getFullYear()}.${now.getMonth() + 1}`;
+          // PATCH = sequential within YEAR.MONTH. Resets to 0 on month rollover.
+          // Comparison is on parsed-then-restringified values, which strips any
+          // leading zeros from historical mistakes — same logical month always
+          // compares equal regardless of how the previous tag was formatted.
+          const nextPatch = `${prevMajor}.${prevMinor}` === nextMajorMinor ? prevPatch + 1 : 0;
 
-          // Pad to 2 digits for sortable lexicographic order.
-          const pad2 = (n) => String(n).padStart(2, '0');
-
-          // Compare in normalized (padded) form on BOTH sides so unpadded
-          // historical tags (e.g. '2026.6.8') still match the current month
-          // when applicable. Without this normalization, every release
-          // following the padding rollout would erroneously reset PATCH to 0.
-          const prevYearMonth = `${prevMajor}.${pad2(prevMinor)}`;
-          const nextYearMonth = `${nextYear}.${pad2(nextMonth)}`;
-          const nextPatch = prevYearMonth === nextYearMonth ? prevPatch + 1 : 0;
-
-          core.setOutput('tag', `${nextYearMonth}.${pad2(nextPatch)}`);
+          core.setOutput('tag', `${nextMajorMinor}.${nextPatch}`);

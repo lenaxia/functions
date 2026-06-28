@@ -495,14 +495,15 @@ fission function create --name myfunction \
 - A function is updated and pushed to `main`
 - Manual workflow dispatch with `release=true`
 
-**Release tag format:** CalVer (`YYYY.MM.PATCH` with zero-padded MM and PATCH)
+**Release tag format:** CalVer (`YYYY.MM.PATCH`)
 
 Example tags:
-- `2026.04.00` — First release in April 2026
-- `2026.04.01` — Second release in April 2026
-- `2026.05.00` — First release in May 2026
+- `2026.4.0` — First release in April 2026
+- `2026.4.1` — Second release in April 2026
+- `2026.6.8` — Ninth release in June 2026 (NOT June 8th)
 
-See the "Versioning Strategy" section below for full details.
+See the "Versioning Strategy" section below for full details, including
+why PATCH is NOT the day of the month.
 
 **Download function package:**
 ```bash
@@ -598,30 +599,28 @@ go mod tidy
 
 ### CalVer (Calendar Versioning)
 
-This repository uses CalVer for releases: `YYYY.MM.PATCH` where MM and
-PATCH are zero-padded to 2 digits for lexicographic sortability.
+This repository uses CalVer for releases: `YYYY.MM.PATCH`
 
 **Components:**
 - `YYYY` — Year (4 digits)
-- `MM` — Month (2 digits, zero-padded, 01-12)
-- `PATCH` — Sequential release number within month (2 digits, zero-padded);
-  **NOT** the day of the month. Resets to `00` at the start of each new
+- `MM` — Month (1-2 digits, 1-12; not zero-padded)
+- `PATCH` — Sequential release number within month (0-indexed);
+  **NOT** the day of the month. Resets to `0` at the start of each new
   month.
 
 **Examples:**
-- `2026.04.00` — April 2026, first release
-- `2026.04.01` — April 2026, second release
-- `2026.06.08` — June 2026, ninth release (regardless of which day in June)
-- `2026.12.05` — December 2026, sixth release
+- `2026.4.0` — April 2026, first release
+- `2026.4.1` — April 2026, second release
+- `2026.6.8` — June 2026, ninth release (regardless of which day in June)
+- `2026.12.5` — December 2026, sixth release
 
-**Why zero-padded:** unpadded tags (`2026.6.8`) sort incorrectly in
-lexicographic order — `2026.10.0` sorts BEFORE `2026.6.8` because `1` < `6`.
-Padding (`2026.10.00` vs `2026.06.08`) restores intuitive ordering.
-
-**Historical note:** releases before late June 2026 are unpadded (e.g.
-`2026.6.8`). The action handles the transition by normalising the
-previous tag's components to padded form for its month-rollover check,
-so the patch counter continues correctly across the format change.
+**Why not zero-padded:** padding components (e.g. `2026.06.08`) breaks
+SemVer (leading zeros are forbidden), which causes GitHub's
+`/releases/latest` endpoint to incorrectly auto-determine "latest" and
+breaks downstream `latest/download/<asset>.zip` URL patterns used by
+Fission Package CRs. The unpadded form sorts lexicographically wrong
+(`2026.10.0` < `2026.6.8`) but that's a UI cosmetic, not a deployment
+break.
 
 **When PATCH increments:**
 - Every function release
