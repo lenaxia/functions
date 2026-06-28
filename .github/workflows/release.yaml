@@ -43,16 +43,22 @@ jobs:
     steps:
       - name: Get Functions
         id: functions
+        # Pass workflow expressions through env vars rather than splicing
+        # them directly into the shell script. action-changed-files emits a
+        # JSON array like ["violetscans"]; splicing that into
+        # CHANGED="${{ … }}" produces broken nested quoting and silently
+        # corrupts the value. Env-var injection is the safe pattern.
+        env:
+          GH_EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_FUNCTION: ${{ inputs.function }}
+          CHANGED_FILES: ${{ needs.prepare.outputs.changed-files }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]; then
-            echo 'functions=["${{ inputs.function }}"]' >> $GITHUB_OUTPUT
+          if [ "$GH_EVENT_NAME" == "workflow_dispatch" ]; then
+            printf 'functions=["%s"]\n' "$DISPATCH_FUNCTION" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CHANGED_FILES" ] && [ "$CHANGED_FILES" != "[]" ]; then
+            printf 'functions=%s\n' "$CHANGED_FILES" >> "$GITHUB_OUTPUT"
           else
-            CHANGED="${{ needs.prepare.outputs.changed-files }}"
-            if [ "$CHANGED" != "[]" ]; then
-              echo "functions=$CHANGED" >> $GITHUB_OUTPUT
-            else
-              echo "functions=[]" >> $GITHUB_OUTPUT
-            fi
+            printf 'functions=[]\n' >> "$GITHUB_OUTPUT"
           fi
 
   build:
