@@ -158,8 +158,10 @@ jobs:
           path: functions/${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip
           retention-days: 1
 
-      - if: ${{ ! inputs.release }}
-        name: Run Function Tests
+      - name: Run Function Tests
+        # Tests gate releases — they run on every build, including the
+        # release path. A test failure fails the Build job, which prevents
+        # the downstream `release` job from creating a GitHub release.
         uses: ./.github/actions/function-tests
         with:
           function: ${{ inputs.function }}
