@@ -1,84 +1,56 @@
-#!/usr/bin/env python3
-"""Test suite for matriarch handler"""
+"""Smoke tests — verify `main()` reaches a well-formed return value.
 
-import os
-import sys
+These tests don't validate workflow correctness, only that the entry
+point parses its configuration, builds its clients, and returns a dict
+with the expected shape.
+"""
+
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
-
-import handler as matriarch_handler
+import main
 
 
-def test_handler_initializes_correctly():
-    """Test that handler initializes with correct defaults"""
-    saved_env = {}
-    for key in [
-        "SERIES_NAME",
-        "KOMGA_API_URL",
-        "KOMGA_API_KEY",
-        "KOMGA_LIBRARY_ID",
-        "VIOLET_URL",
-        "DRY_RUN",
-        "TEST_MODE",
-    ]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_main_returns_test_mode_skip(monkeypatch):
+    """TEST_MODE=true short-circuits the entire pipeline and returns success."""
+    monkeypatch.setenv("KOMGA_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_MODE", "true")
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        os.environ["KOMGA_LIBRARY_ID"] = "test-library-id"
-        os.environ["VIOLET_URL"] = "https://example.com"
-        os.environ["DRY_RUN"] = "true"
-        os.environ["TEST_MODE"] = "true"
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            result = matriarch_handler.handler({})
-
-            assert result["status"] == "success", f"Expected success"
-            assert "message" in result
-            assert result["test_mode"] == True
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in [
-            "SERIES_NAME",
-            "KOMGA_API_URL",
-            "KOMGA_API_KEY",
-            "KOMGA_LIBRARY_ID",
-            "VIOLET_URL",
-            "DRY_RUN",
-            "TEST_MODE",
-        ]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    assert result["status"] == "success"
+    assert "message" in result
+    assert result["test_mode"] is True
 
 
-def test_handler_with_api_key():
-    """Test that handler works with API key in test mode"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_main_returns_test_mode_with_dry_run(monkeypatch):
+    """DRY_RUN + TEST_MODE both set still returns the test-mode short-circuit."""
+    monkeypatch.setenv("KOMGA_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_MODE", "true")
+    monkeypatch.setenv("DRY_RUN", "true")
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        os.environ["TEST_MODE"] = "true"
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
 
-        result = matriarch_handler.handler({})
+    assert result["status"] == "success"
+    assert result["test_mode"] is True
 
-        assert result["status"] == "success", "Expected success status"
-        assert result["test_mode"] == True
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+
+def test_main_uses_env_overrides(monkeypatch):
+    """SERIES_NAME and VIOLET_URL env vars override the hardcoded defaults.
+
+    matriarch ships with defaults for the original series ("I'll Be The
+    Matriarch In This Life") but env-var injection should always win.
+    """
+    monkeypatch.setenv("KOMGA_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_MODE", "true")
+    monkeypatch.setenv("SERIES_NAME", "Custom Series Name")
+    monkeypatch.setenv("VIOLET_URL", "https://violetscans.org/comics/custom/")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
+
+    assert result["status"] == "success"

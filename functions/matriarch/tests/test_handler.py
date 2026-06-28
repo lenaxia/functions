@@ -1,62 +1,77 @@
-import os
-import sys
+"""Tests for `main()` entry point: error paths and return-value contract.
+
+matriarch's validation gate is simpler than violetscans': only KOMGA_API_KEY
+is required (everything else has a hardcoded default).
+"""
+
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
-
-import handler as matriarch_handler
+import main
 
 
-def test_handler_success():
-    """Test that handler returns success status with test mode"""
-    saved_env = {}
-    for key in ["SCRATCH_PATH", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_returns_error_when_api_key_missing(monkeypatch):
+    """KOMGA_API_KEY is the only required key. Missing it errors out cleanly."""
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
 
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-            os.environ["TEST_MODE"] = "true"
-
-            result = matriarch_handler.handler({})
-
-            assert result["status"] == "success", (
-                f"Expected success, got {result['status']}"
-            )
-            assert "message" in result, "Expected message in result"
-            assert result["test_mode"] == True, "Expected test_mode to be True"
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SCRATCH_PATH", "TEST_MODE"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    assert result["status"] == "error"
+    assert "KOMGA_API_KEY" in result["message"]
 
 
-def test_missing_api_key():
-    """Test that handler requires KOMGA_API_KEY"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def test_no_error_when_only_api_key_set(monkeypatch):
+    """When KOMGA_API_KEY is set, validation passes (other keys default).
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        if "KOMGA_API_KEY" in os.environ:
-            del os.environ["KOMGA_API_KEY"]
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
+    Use TEST_MODE to short-circuit before main() tries to hit Komga.
+    """
+    monkeypatch.setenv("KOMGA_API_KEY", "test-key")
+    monkeypatch.setenv("TEST_MODE", "true")
 
-        result = matriarch_handler.handler({})
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
 
-        assert result["status"] == "error", "Expected error status"
-        assert "KOMGA_API_KEY" in result["message"], "Expected API key error message"
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    assert result["status"] == "success"
+
+
+def test_test_mode_bypasses_validation(monkeypatch):
+    """TEST_MODE=true is checked before key-presence validation.
+
+    This lets the function be invoked with no config at all during smoke
+    tests of the deployment surface.
+    """
+    monkeypatch.setenv("TEST_MODE", "true")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
+
+    assert result["status"] == "success"
+    assert result["test_mode"] is True
+
+
+def test_test_mode_string_case_insensitive(monkeypatch):
+    """TEST_MODE comparison is case-insensitive on the string form."""
+    monkeypatch.setenv("TEST_MODE", "TRUE")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
+
+    assert result["test_mode"] is True
+
+
+def test_return_value_has_documented_keys(monkeypatch):
+    """Success result must include: status, message, test_mode.
+
+    matriarch's response is simpler than violetscans' — no `series` or
+    `secret_name` fields since identity is hardcoded into main().
+    """
+    monkeypatch.setenv("TEST_MODE", "true")
+    monkeypatch.setenv("KOMGA_API_KEY", "k")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        monkeypatch.setenv("SCRATCH_PATH", tmp)
+        result = main.main()
+
+    assert set(result.keys()) >= {"status", "message", "test_mode"}

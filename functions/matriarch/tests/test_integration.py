@@ -1,363 +1,411 @@
-import os
-import sys
+"""Integration tests — exercise the full `_run()` workflow with mocked I/O.
+
+These tests stitch the real classes together and verify the orchestration
+inside `_run()`: missing-chapter computation, scratch recovery, orphan
+cleanup, dry-run, import polling, and the trigger_scan fallback.
+
+Patterns borrowed from matriarch-vy/tests/test_integration.py, adapted to
+the violetscans-specific class names.
+"""
+
 import tempfile
-from unittest.mock import Mock, patch, MagicMock as MockMagic
+import time
+import zipfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
-
-import handler as matriarch_handler
+import main
 
 
-def test_handler_with_new_chapters():
-    """Test handler downloads and verifies new chapters"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
-
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[98],
-                    ):
-                        with patch.object(
-                            matriarch_handler.VioletScansScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_handler.VioletScansScraper,
-                                "get_latest_chapter",
-                                return_value=99,
-                            ):
-                                with patch.object(
-                                    matriarch_handler.VioletScansScraper,
-                                    "download_chapter",
-                                    return_value=True,
-                                ):
-                                    with patch.object(
-                                        matriarch_handler.KomgaAPIClient,
-                                        "trigger_scan",
-                                        return_value=True,
-                                    ):
-                                        with patch.object(
-                                            matriarch_handler.KomgaAPIClient,
-                                            "verify_book_imported",
-                                            return_value=True,
-                                        ):
-                                            with patch("time.sleep"):
-                                                result = matriarch_handler.handler({})
-
-                                                assert result["status"] == "success", (
-                                                    "Expected success status"
-                                                )
-                                                assert result["downloaded"] == [99], (
-                                                    f"Expected [99], got {result['downloaded']}"
-                                                )
-                                                assert result["failed"] == [], (
-                                                    f"Expected [], got {result['failed']}"
-                                                )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+# ─────────────────────────── helpers ───────────────────────────────────────
 
 
-def test_handler_with_download_failures():
-    """Test handler handles download failures gracefully"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
-
-    def mock_komga_init(self, api_url, api_key, test_mode=False):
-        self.api_url = api_url.rstrip("/")
-        self.api_key = api_key
-        self.test_mode = test_mode
-        self.headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-
-    def mock_violet_init(self, base_url, test_mode=False):
-        self.base_url = base_url
-        self.test_mode = test_mode
-
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_handler.KomgaAPIClient, "__init__", mock_komga_init
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[98],
-                    ):
-                        with patch.object(
-                            matriarch_handler.VioletScansScraper,
-                            "__init__",
-                            mock_violet_init,
-                        ):
-                            with patch.object(
-                                matriarch_handler.VioletScansScraper,
-                                "get_latest_chapter",
-                                return_value=100,
-                            ):
-                                with patch.object(
-                                    matriarch_handler.VioletScansScraper,
-                                    "download_chapter",
-                                    side_effect=[True, False, True],
-                                ):
-                                    result = matriarch_handler.handler({})
-
-                                    assert result["status"] == "success", (
-                                        "Expected success status"
-                                    )
-                                    assert 99 in result["downloaded"], (
-                                        "Expected 99 in downloaded"
-                                    )
-                                    assert 100 in result["failed"], (
-                                        "Expected 100 in failed"
-                                    )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+def _create_fake_cbz(path: Path, name: str) -> Path:
+    """Drop a real (1-page) CBZ into `path` with the given filename."""
+    path.mkdir(parents=True, exist_ok=True)
+    cbz = path / name
+    with zipfile.ZipFile(cbz, "w") as z:
+        z.writestr("page_001.jpg", b"fake")
+    return cbz
 
 
-def test_handler_with_partial_verification():
-    """Test handler handles partial import verification"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+def _make_download_side_effect(scratch_path: Path):
+    """Side-effect that simulates VioletScansScraper.download_chapter:
+    create the expected CBZ on disk, return True."""
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
+    def _download(chapter, output_path, *args, **kwargs):
+        output_path.mkdir(parents=True, exist_ok=True)
+        cbz = output_path / f"Chapter {main._chapter_str(chapter)}.cbz"
+        with zipfile.ZipFile(cbz, "w") as z:
+            z.writestr("page_001.jpg", b"fake")
+        return True
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[98],
-                    ):
-                        with patch.object(
-                            matriarch_handler.VioletScansScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_handler.VioletScansScraper,
-                                "get_latest_chapter",
-                                return_value=100,
-                            ):
-                                with patch.object(
-                                    matriarch_handler.VioletScansScraper,
-                                    "download_chapter",
-                                    return_value=True,
-                                ):
-                                    with patch.object(
-                                        matriarch_handler.KomgaAPIClient,
-                                        "trigger_scan",
-                                        return_value=True,
-                                    ):
-                                        with patch.object(
-                                            matriarch_handler.KomgaAPIClient,
-                                            "verify_book_imported",
-                                            side_effect=[True, False, True],
-                                        ):
-                                            with patch("time.sleep"):
-                                                result = matriarch_handler.handler({})
-
-                                                assert result["status"] == "success", (
-                                                    "Expected success status"
-                                                )
-                                                assert result["downloaded"] == [
-                                                    99,
-                                                    100,
-                                                ], (
-                                                    f"Expected [99, 100], got {result['downloaded']}"
-                                                )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    return _download
 
 
-def test_komga_api_error_handling():
-    """Test KomgaAPIClient handles request errors"""
-    client = matriarch_handler.KomgaAPIClient(
-        "http://komga.example.com", "test-key", test_mode=False
+def _import_and_move(series_id, file_paths, *args, **kwargs):
+    """Side-effect that simulates Komga's async import — moves files away."""
+    for f in file_paths:
+        p = Path(f)
+        if p.exists():
+            p.unlink()
+    return True
+
+
+def _import_fail(series_id, file_paths, *args, **kwargs):
+    return False
+
+
+def _build_clients_and_scratch(tmp_dir: str):
+    """Build a real KomgaAPIClient + VioletScansScraper + ScratchFileManager
+    with their network methods unstubbed (we patch them per-test)."""
+    scratch_path = Path(tmp_dir) / "violetscans-test"
+    scratch_path.mkdir(parents=True)
+    komga = main.KomgaAPIClient("http://komga.example.com", "test-key", test_mode=False)
+    scraper = main.VioletScansScraper(
+        "https://violetscans.org/comics/x/", test_mode=False
     )
-
-    with patch("requests.get") as mock_get:
-        mock_get.side_effect = Exception("Network error")
-        series_id = client.get_series_id("Test Series")
-        assert series_id is None, "Expected None on error"
+    manager = main.ScratchFileManager(scratch_path, test_mode=False)
+    return komga, scraper, manager, scratch_path
 
 
-def test_violet_scraper_error_handling():
-    """Test VioletScansScraper handles request errors"""
-    scraper = matriarch_handler.VioletScansScraper(
-        "https://example.com", test_mode=False
-    )
-
-    with patch("requests.get") as mock_get:
-        mock_get.side_effect = Exception("Network error")
-        latest = scraper.get_latest_chapter()
-        assert latest == 0, "Expected 0 on error"
+# ─────────────────────────── _run() scenarios ──────────────────────────────
 
 
-def test_scratch_file_manager_write_cbz_success():
-    """Test ScratchFileManager.write_cbz writes file successfully"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=False)
+class TestRunNoOps:
+    def test_series_not_found_logs_and_returns(self):
+        """When Komga can't find the series, _run exits without further action."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(komga, "get_series_id", return_value=None):
+                # Should not raise, should not attempt to fetch chapters.
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
 
-        cbz_data = b"fake cbz data"
-        result = manager.write_cbz(100, cbz_data)
-
-        assert result is True, "Expected True on successful write"
-        expected_file = scratch_path / "Chapter 100.cbz"
-        assert expected_file.exists(), "CBZ file should exist"
-        assert expected_file.read_bytes() == cbz_data, "CBZ data should match"
-
-
-def test_scratch_file_manager_error_handling():
-    """Test ScratchFileManager handles write errors"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir) / "readonly"
-        scratch_path.mkdir()
-        scratch_path.chmod(0o444)
-
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=False)
-
-        result = manager.write_cbz(100, b"test")
-        assert result is False, "Expected False on write error"
-
-        scratch_path.chmod(0o755)
-
-
-def test_handler_integration_full_workflow():
-    """Test handler executes full workflow successfully"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
-
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
+    def test_no_missing_chapters_skips_download(self):
+        """If Komga already has every available chapter, no download runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[1.0, 2.0, 3.0]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0, 2.0, 3.0]),
+                patch.object(scraper, "download_chapter") as dl,
+                patch.object(komga, "import_books") as imp,
             ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[],
-                    ):
-                        with patch.object(
-                            matriarch_handler.VioletScansScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_handler.VioletScansScraper,
-                                "get_latest_chapter",
-                                return_value=2,
-                            ):
-                                with patch.object(
-                                    matriarch_handler.VioletScansScraper,
-                                    "download_chapter",
-                                    return_value=True,
-                                ):
-                                    with patch.object(
-                                        matriarch_handler.KomgaAPIClient,
-                                        "trigger_scan",
-                                        return_value=True,
-                                    ):
-                                        with patch.object(
-                                            matriarch_handler.KomgaAPIClient,
-                                            "verify_book_imported",
-                                            return_value=True,
-                                        ):
-                                            with patch("time.sleep"):
-                                                result = matriarch_handler.handler({})
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
 
-                                                assert result["status"] == "success"
-                                                assert result["downloaded"] == [1, 2]
-                                                assert result["failed"] == []
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+            dl.assert_not_called()
+            imp.assert_not_called()
+
+
+class TestRunDryRun:
+    def test_dry_run_does_not_download_or_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[2.0]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0, 2.0, 3.0]),
+                patch.object(scraper, "download_chapter") as dl,
+                patch.object(komga, "import_books") as imp,
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", True)
+
+            dl.assert_not_called()
+            imp.assert_not_called()
+
+
+class TestRunHappyPath:
+    def test_downloads_and_imports_missing_chapters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[1.0]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0, 2.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(
+                    komga, "import_books", side_effect=_import_and_move
+                ) as imp,
+                patch("time.sleep"),
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            imp.assert_called_once()
+            series_id, files = imp.call_args[0][:2]
+            assert series_id == "s-1"
+            assert len(files) == 1
+            assert files[0].name == "Chapter 2.cbz"
+
+    def test_downloads_only_truly_missing_chapters(self):
+        """Avoids re-downloading chapters that are already in Komga."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[1.0, 2.0]),
+                patch.object(
+                    scraper, "get_all_chapters", return_value=[1.0, 2.0, 3.0, 4.0]
+                ),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ) as dl,
+                patch.object(komga, "import_books", side_effect=_import_and_move),
+                patch("time.sleep"),
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            downloaded = sorted(c.args[0] for c in dl.call_args_list)
+            assert downloaded == [3.0, 4.0]
+
+
+class TestRunRecovery:
+    def test_recovers_cbz_from_previous_run(self):
+        """A CBZ left behind by a failed previous import is re-imported, not re-downloaded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            _create_fake_cbz(scratch, "Chapter 5.cbz")
+
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[]),
+                patch.object(scraper, "get_all_chapters", return_value=[5.0, 6.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ) as dl,
+                patch.object(
+                    komga, "import_books", side_effect=_import_and_move
+                ) as imp,
+                patch("time.sleep"),
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            # Chapter 5 should NOT be re-downloaded (it was recovered).
+            downloaded = [c.args[0] for c in dl.call_args_list]
+            assert 5.0 not in downloaded
+            # But both should be imported.
+            assert imp.call_count == 1
+            assert len(imp.call_args[0][1]) == 2
+
+    def test_cleans_up_orphaned_scratch_already_in_komga(self):
+        """A leftover CBZ for a chapter that's now in Komga gets deleted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            orphan = _create_fake_cbz(scratch, "Chapter 5.cbz")
+
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[5.0]),
+                patch.object(scraper, "get_all_chapters", return_value=[5.0, 6.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(komga, "import_books", side_effect=_import_and_move),
+                patch("time.sleep"),
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            assert not orphan.exists(), (
+                "orphaned scratch file should be cleaned up before further work"
+            )
+
+
+class TestRunErrors:
+    def test_continues_when_individual_download_fails(self):
+        """Failed download doesn't crash _run — other chapters still proceed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+
+            def download_some(chapter, output_path, *args, **kwargs):
+                if chapter == 2.0:
+                    return False  # simulate failure
+                return _make_download_side_effect(scratch)(chapter, output_path)
+
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0, 2.0, 3.0]),
+                patch.object(scraper, "download_chapter", side_effect=download_some),
+                patch.object(
+                    komga, "import_books", side_effect=_import_and_move
+                ) as imp,
+                patch("time.sleep"),
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            # Only successful downloads imported: 1.0 and 3.0
+            imported_files = imp.call_args[0][1]
+            assert len(imported_files) == 2
+            assert {f.name for f in imported_files} == {
+                "Chapter 1.cbz",
+                "Chapter 3.cbz",
+            }
+
+    def test_exception_in_get_series_id_is_caught(self):
+        """Top-level exception handling: a thrown Komga error is logged, not raised."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(
+                komga, "get_series_id", side_effect=Exception("Komga down")
+            ):
+                # Must not raise.
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+
+class TestRunImportFallback:
+    def test_falls_back_to_scan_when_import_fails(self):
+        """Import API failure triggers a library scan as a degraded fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(komga, "import_books", side_effect=_import_fail),
+                patch.object(komga, "trigger_scan", return_value=True) as scan,
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            scan.assert_called_once_with("lib")
+
+    def test_no_scan_when_import_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(komga, "import_books", side_effect=_import_and_move),
+                patch.object(komga, "trigger_scan") as scan,
+                patch("time.sleep"),
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            scan.assert_not_called()
+
+
+class TestRunImportPolling:
+    """The post-import polling loop has a 300s deadline. Patching `time.time`
+    lets us simulate timeout behavior without sleeping in tests."""
+
+    def test_polls_until_files_moved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(komga, "import_books", side_effect=_import_and_move),
+                patch("time.sleep") as sleep_mock,
+            ):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            # File moved immediately by _import_and_move's eager unlink, so
+            # the polling loop exits on first iteration. At least one sleep
+            # may or may not happen depending on loop ordering.
+            # The crucial assertion: the workflow completed without timing out.
+            assert sleep_mock.call_count <= 100, (
+                "polling should have terminated quickly when files moved"
+            )
+
+    def test_polling_times_out_when_files_never_move(self):
+        """If Komga never moves the file, we hit the 300s deadline and stop."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+
+            # Stuck import: returns True but doesn't move files.
+            def stuck_import(series_id, file_paths, *args, **kwargs):
+                return True
+
+            # Advance fake time aggressively past the 300s deadline.
+            fake_clock = [0.0]
+
+            def fake_time():
+                fake_clock[0] += 100
+                return fake_clock[0]
+
+            with (
+                patch.object(komga, "get_series_id", return_value="s-1"),
+                patch.object(komga, "get_existing_books", return_value=[]),
+                patch.object(scraper, "get_all_chapters", return_value=[1.0]),
+                patch.object(
+                    scraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(komga, "import_books", side_effect=stuck_import),
+                patch("time.sleep"),
+                patch("time.time", side_effect=fake_time),
+            ):
+                # Must not hang.
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False)
+
+            # File is still in scratch (Komga never moved it).
+            assert (scratch / "Chapter 1.cbz").exists()
+
+
+# ─────────────────────── full main() integration ───────────────────────────
+
+
+class TestMainFullWorkflow:
+    """End-to-end through main() with env-based config."""
+
+    def test_main_runs_workflow_with_new_chapters(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            monkeypatch.setenv("SERIES_NAME", "Test Series")
+            monkeypatch.setenv("VIOLET_URL", "https://violetscans.org/comics/x/")
+            monkeypatch.setenv("KOMGA_API_KEY", "test-key")
+            monkeypatch.setenv("KOMGA_API_URL", "http://komga.example.com")
+            monkeypatch.setenv("SCRATCH_PATH", tmp)
+
+            # matriarch's scratch subdir is hardcoded to "matriarch" (unlike
+            # violetscans which derives it from the secret name).
+            scratch = Path(tmp) / "matriarch"
+
+            with (
+                patch.object(main.KomgaAPIClient, "get_series_id", return_value="s-1"),
+                patch.object(
+                    main.KomgaAPIClient, "get_existing_books", return_value=[1.0]
+                ),
+                patch.object(
+                    main.VioletScansScraper, "get_all_chapters", return_value=[1.0, 2.0]
+                ),
+                patch.object(
+                    main.VioletScansScraper,
+                    "download_chapter",
+                    side_effect=_make_download_side_effect(scratch),
+                ),
+                patch.object(
+                    main.KomgaAPIClient, "import_books", side_effect=_import_and_move
+                ) as imp,
+                patch("time.sleep"),
+            ):
+                result = main.main()
+
+            assert result["status"] == "success"
+            imp.assert_called_once()

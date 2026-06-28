@@ -1,428 +1,333 @@
-import os
-import sys
+"""Unit tests for KomgaAPIClient, VioletScansScraper, ScratchFileManager.
+
+These tests construct each class directly and mock its outbound HTTP /
+filesystem calls. They DON'T touch main(); for end-to-end coverage see
+test_integration.py.
+"""
+
 import tempfile
-from unittest.mock import Mock, patch, MagicMock as MockMagic
 from pathlib import Path
+from unittest.mock import Mock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "."))
-
-import handler as matriarch_handler
+import main
 
 
-def test_komga_api_get_series_id_success():
-    """Test KomgaAPIClient.get_series_id returns series ID"""
-    saved_env = {}
-    if "KOMGA_API_URL" in os.environ:
-        saved_env["KOMGA_API_URL"] = os.environ["KOMGA_API_URL"]
-    if "KOMGA_API_KEY" in os.environ:
-        saved_env["KOMGA_API_KEY"] = os.environ["KOMGA_API_KEY"]
-
-    try:
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-
-        client = matriarch_handler.KomgaAPIClient(
-            "http://komga.example.com", "test-key-12345", test_mode=True
-        )
-
-        series_id = client.get_series_id("Test Series")
-        assert series_id == "test-series-id", (
-            f"Expected test-series-id, got {series_id}"
-        )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["KOMGA_API_URL", "KOMGA_API_KEY"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+# ───────────────────────────── KomgaAPIClient ──────────────────────────────
 
 
-def test_komga_api_get_series_id_not_found():
-    """Test KomgaAPIClient.get_series_id returns None when not found"""
-    client = matriarch_handler.KomgaAPIClient(
-        "http://komga.example.com", "test-key", test_mode=False
-    )
+class TestKomgaAPIClient:
+    """Behaviour of the Komga REST client wrapper."""
 
-    with patch("requests.get") as mock_get:
-        mock_response = Mock()
-        mock_response.json.return_value = []
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+    def test_test_mode_get_series_id_returns_sentinel(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=True)
+        assert client.get_series_id("Any") == "test-series-id"
 
-        series_id = client.get_series_id("Non-existent Series")
-        assert series_id is None, "Expected None when series not found"
+    def test_test_mode_get_existing_books_returns_empty(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=True)
+        assert client.get_existing_books("any") == []
 
+    def test_test_mode_trigger_scan_returns_true(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=True)
+        assert client.trigger_scan() is True
 
-def test_komga_api_get_existing_books():
-    """Test KomgaAPIClient.get_existing_books returns chapter numbers"""
-    client = matriarch_handler.KomgaAPIClient(
-        "http://komga.example.com", "test-key", test_mode=True
-    )
+    def test_test_mode_import_books_returns_true(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=True)
+        assert client.import_books("s", ["/tmp/x.cbz"]) is True
 
-    books = client.get_existing_books("test-series-id")
-    assert books == [], f"Expected empty list, got {books}"
+    def test_get_series_id_returns_first_match(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={"content": [{"id": "abc-123", "name": "Test"}]}
+                ),
+            )
+            assert client.get_series_id("Test") == "abc-123"
 
+    def test_get_series_id_returns_none_when_empty(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                raise_for_status=Mock(),
+                json=Mock(return_value={"content": []}),
+            )
+            assert client.get_series_id("Missing") is None
 
-def test_komga_api_get_existing_books_with_chapters():
-    """Test KomgaAPIClient.get_existing_books parses chapter numbers correctly"""
-    client = matriarch_handler.KomgaAPIClient(
-        "http://komga.example.com", "test-key", test_mode=False
-    )
+    def test_get_series_id_returns_none_on_network_error(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get", side_effect=Exception("network down")):
+            assert client.get_series_id("Test") is None
 
-    with patch("requests.get") as mock_get:
-        mock_response = Mock()
-        mock_response.json.return_value = [
-            {"name": "Chapter 1"},
-            {"name": "Chapter 2"},
-            {"name": "Chapter 3.5"},
-            {"name": "Other Book"},
+    def test_get_series_id_strips_trailing_slash_from_url(self):
+        """Constructor normalises trailing slash so URL construction is uniform."""
+        client = main.KomgaAPIClient("http://k/", "key", test_mode=False)
+        assert client.api_url == "http://k"
+
+    def test_get_existing_books_parses_chapter_from_url_stem(self):
+        """Chapter regex applies to the file URL's stem first.
+
+        Komga sometimes reformats display names but the URL stem stays as
+        the original filename. The function must prefer the URL stem.
+        """
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={
+                        "content": [
+                            {"url": "/foo/Chapter 47.cbz", "name": "anything"},
+                            {"url": "/foo/Chapter 048.cbz", "name": "renamed"},
+                        ],
+                        "last": True,
+                    }
+                ),
+            )
+            books = client.get_existing_books("s")
+            assert set(books) == {47.0, 48.0}
+
+    def test_get_existing_books_falls_back_to_name(self):
+        """If URL has no chapter pattern, fall back to the display name."""
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={
+                        "content": [{"url": "", "name": "Chapter 99"}],
+                        "last": True,
+                    }
+                ),
+            )
+            assert client.get_existing_books("s") == [99.0]
+
+    def test_get_existing_books_handles_decimal_chapters(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={
+                        "content": [
+                            {"url": "/Chapter 1.cbz", "name": ""},
+                            {"url": "/Chapter 1.5.cbz", "name": ""},
+                            {"url": "/Chapter 2.cbz", "name": ""},
+                        ],
+                        "last": True,
+                    }
+                ),
+            )
+            assert client.get_existing_books("s") == [1.0, 1.5, 2.0]
+
+    def test_get_existing_books_paginates(self):
+        """Pages are fetched until `last: True`."""
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        responses = [
+            Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={
+                        "content": [{"url": "/Chapter 1.cbz", "name": ""}],
+                        "last": False,
+                    }
+                ),
+            ),
+            Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={
+                        "content": [{"url": "/Chapter 2.cbz", "name": ""}],
+                        "last": True,
+                    }
+                ),
+            ),
         ]
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        with patch("requests.get", side_effect=responses):
+            books = client.get_existing_books("s")
+        assert books == [1.0, 2.0]
 
-        books = client.get_existing_books("test-series-id")
-        assert len(books) == 3, f"Expected 3 chapters, got {len(books)}"
-        assert 1.0 in books, "Expected Chapter 1"
-        assert 2.0 in books, "Expected Chapter 2"
-        assert 3.5 in books, "Expected Chapter 3.5"
+    def test_get_existing_books_returns_empty_on_error(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get", side_effect=Exception("boom")):
+            assert client.get_existing_books("s") == []
 
+    def test_get_existing_books_deduplicates(self):
+        """If the same chapter appears twice in Komga (legacy state), dedup."""
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.get") as mock_get:
+            mock_get.return_value = Mock(
+                raise_for_status=Mock(),
+                json=Mock(
+                    return_value={
+                        "content": [
+                            {"url": "/Chapter 5.cbz", "name": ""},
+                            {
+                                "url": "/Chapter 005.cbz",
+                                "name": "",
+                            },  # same num, zero-padded
+                        ],
+                        "last": True,
+                    }
+                ),
+            )
+            assert client.get_existing_books("s") == [5.0]
 
-def test_komga_api_trigger_scan():
-    """Test KomgaAPIClient.trigger_scan returns True"""
-    client = matriarch_handler.KomgaAPIClient(
-        "http://komga.example.com", "test-key", test_mode=True
-    )
+    def test_trigger_scan_no_library_id_hits_global_endpoint(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = Mock(raise_for_status=Mock())
+            assert client.trigger_scan() is True
+            assert mock_post.call_args[0][0] == "http://k/api/v1/libraries/scan"
 
-    result = client.trigger_scan()
-    assert result is True, "Expected True for test mode"
+    def test_trigger_scan_with_library_id_targets_library(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = Mock(raise_for_status=Mock())
+            client.trigger_scan("lib-42")
+            assert mock_post.call_args[0][0] == "http://k/api/v1/libraries/lib-42/scan"
 
+    def test_trigger_scan_returns_false_on_error(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.post", side_effect=Exception("503")):
+            assert client.trigger_scan() is False
 
-def test_komga_api_verify_book_imported():
-    """Test KomgaAPIClient.verify_book_imported returns True in test mode"""
-    client = matriarch_handler.KomgaAPIClient(
-        "http://komga.example.com", "test-key", test_mode=True
-    )
+    def test_import_books_builds_payload(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.post") as mock_post:
+            mock_post.return_value = Mock(raise_for_status=Mock())
+            assert client.import_books(
+                "series-1", [Path("/tmp/a.cbz"), Path("/tmp/b.cbz")]
+            )
+            payload = mock_post.call_args.kwargs["json"]
+            assert payload["copyMode"] == "MOVE"
+            assert len(payload["books"]) == 2
+            assert payload["books"][0]["seriesId"] == "series-1"
 
-    result = client.verify_book_imported("test-series-id", 100)
-    assert result is True, "Expected True for test mode"
+    def test_import_books_returns_false_on_error(self):
+        client = main.KomgaAPIClient("http://k", "key", test_mode=False)
+        with patch("requests.post", side_effect=Exception("409")):
+            assert client.import_books("s", [Path("/tmp/x.cbz")]) is False
 
-
-def test_violet_scraper_get_latest_chapter():
-    """Test VioletScansScraper.get_latest_chapter returns max chapter"""
-    scraper = matriarch_handler.VioletScansScraper(
-        "https://example.com", test_mode=True
-    )
-
-    latest = scraper.get_latest_chapter()
-    assert latest == 100, f"Expected 100, got {latest}"
-
-
-def test_violet_scraper_get_latest_chapter_no_chapters():
-    """Test VioletScansScraper.get_latest_chapter returns 0 when no chapters"""
-    scraper = matriarch_handler.VioletScansScraper(
-        "https://example.com", test_mode=False
-    )
-
-    with patch("requests.get") as mock_get:
-        mock_response = Mock()
-        mock_response.raise_for_status = Mock()
-        mock_response.text = "<div id='chapterlist'></div>"
-        mock_get.return_value = mock_response
-
-        latest = scraper.get_latest_chapter()
-        assert latest == 0, "Expected 0 when no chapters found"
-
-
-def test_violet_scraper_download_chapter_test_mode():
-    """Test VioletScansScraper.download_chapter returns False in test mode"""
-    scraper = matriarch_handler.VioletScansScraper(
-        "https://example.com", test_mode=True
-    )
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        output_path = Path(temp_dir)
-        result = scraper.download_chapter(100, output_path)
-        assert result is False, "Expected False for test mode"
-
-
-def test_scratch_file_manager_init():
-    """Test ScratchFileManager creates directory"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir) / "scratch"
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=True)
-
-        assert manager.scratch_path == scratch_path
-        assert scratch_path.exists(), "Scratch directory should be created"
+    def test_headers_include_api_key(self):
+        client = main.KomgaAPIClient("http://k", "abc123", test_mode=False)
+        assert client.headers["X-API-Key"] == "abc123"
 
 
-def test_scratch_file_manager_write_cbz_test_mode():
-    """Test ScratchFileManager.write_cbz returns False in test mode"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=True)
-
-        result = manager.write_cbz(100, b"fake cbz data")
-        assert result is False, "Expected False for test mode"
+# ──────────────────────── VioletScansScraper ───────────────────────────────
 
 
-def test_scratch_file_manager_list_existing_files():
-    """Test ScratchFileManager.list_existing_files returns list of CBZ files"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=False)
+class TestVioletScansScraper:
+    """Basic class behaviour. Detailed parsing tests live in test_scraper.py."""
 
-        (scratch_path / "Chapter 100.cbz").write_bytes(b"test")
-        (scratch_path / "Chapter 101.cbz").write_bytes(b"test")
-        (scratch_path / "other.txt").write_bytes(b"test")
+    def test_test_mode_get_all_chapters_returns_1_to_100(self):
+        scraper = main.VioletScansScraper(
+            "https://violetscans.org/comics/x/", test_mode=True
+        )
+        chapters = scraper.get_all_chapters()
+        assert len(chapters) == 100
+        assert chapters[0] == 1.0
+        assert chapters[-1] == 100.0
 
-        files = manager.list_existing_files()
-        assert len(files) == 2, f"Expected 2 files, got {len(files)}"
+    def test_test_mode_download_returns_false(self):
+        scraper = main.VioletScansScraper(
+            "https://violetscans.org/comics/x/", test_mode=True
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            assert scraper.download_chapter(1.0, Path(tmp)) is False
 
+    def test_get_all_chapters_returns_empty_on_network_error(self):
+        scraper = main.VioletScansScraper("https://violetscans.org/comics/x/")
+        scraper.session.get = Mock(side_effect=Exception("DNS failure"))
+        assert scraper.get_all_chapters() == []
 
-def test_scratch_file_manager_cleanup_file():
-    """Test ScratchFileManager.cleanup_file removes file"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=False)
+    def test_user_agent_set(self):
+        """Violet Scans needs a non-default UA to avoid bot blocks."""
+        scraper = main.VioletScansScraper("https://violetscans.org/comics/x/")
+        ua = scraper.session.headers["User-Agent"]
+        assert "Mozilla" in ua and "Chrome" in ua
 
-        test_file = scratch_path / "test.cbz"
-        test_file.write_bytes(b"test")
-
-        result = manager.cleanup_file(test_file)
-        assert result is True, "Expected True when cleanup succeeds"
-        assert not test_file.exists(), "File should be removed"
-
-
-def test_scratch_file_manager_cleanup_file_not_exists():
-    """Test ScratchFileManager.cleanup_file returns False when file doesn't exist"""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        scratch_path = Path(temp_dir)
-        manager = matriarch_handler.ScratchFileManager(scratch_path, test_mode=False)
-
-        test_file = scratch_path / "nonexistent.cbz"
-        result = manager.cleanup_file(test_file)
-        assert result is False, "Expected False when file doesn't exist"
-
-
-def test_handler_series_not_found():
-    """Test handler returns error when series not found in Komga"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
-
-    try:
-        os.environ["SERIES_NAME"] = "Non-existent Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient, "get_series_id", return_value=None
-                ):
-                    result = matriarch_handler.handler({})
-
-                    assert result["status"] == "error", "Expected error status"
-                    assert "not found" in result["message"].lower(), (
-                        "Expected 'not found' in message"
-                    )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    def test_caches_chapter_map(self):
+        scraper = main.VioletScansScraper("https://violetscans.org/comics/x/")
+        scraper._chapter_map = {1.0: "https://example.com/1"}
+        # If cache exists, _fetch_chapter_map returns it without hitting the wire.
+        scraper.session.get = Mock(side_effect=Exception("should not be called"))
+        assert scraper._fetch_chapter_map() == {1.0: "https://example.com/1"}
 
 
-def test_handler_no_new_chapters():
-    """Test handler returns success when no new chapters available"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
-
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
-
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[100, 99, 98],
-                    ):
-                        with patch.object(
-                            matriarch_handler.VioletScansScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_handler.VioletScansScraper,
-                                "get_latest_chapter",
-                                return_value=100,
-                            ):
-                                result = matriarch_handler.handler({})
-
-                                assert result["status"] == "success", (
-                                    "Expected success status"
-                                )
-                                assert (
-                                    "no new chapters" in result["message"].lower()
-                                    or "Latest available" in result["message"]
-                                ), (
-                                    f"Expected 'no new chapters' message, got: {result['message']}"
-                                )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+# ─────────────────────────── ScratchFileManager ────────────────────────────
 
 
-def test_handler_dry_run():
-    """Test handler lists chapters in dry run mode without downloading"""
-    saved_env = {}
-    for key in [
-        "SERIES_NAME",
-        "KOMGA_API_URL",
-        "KOMGA_API_KEY",
-        "DRY_RUN",
-        "TEST_MODE",
-    ]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+class TestScratchFileManager:
+    def test_init_creates_scratch_directory(self, tmp_path):
+        scratch = tmp_path / "new-scratch"
+        assert not scratch.exists()
+        main.ScratchFileManager(scratch)
+        assert scratch.is_dir()
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        os.environ["DRY_RUN"] = "true"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
+    def test_recover_existing_finds_complete_cbz_files(self, tmp_path):
+        (tmp_path / "Chapter 1.cbz").write_bytes(b"a")
+        (tmp_path / "Chapter 47.cbz").write_bytes(b"b")
+        (tmp_path / "Chapter 2.5.cbz").write_bytes(b"c")
+        mgr = main.ScratchFileManager(tmp_path)
+        assert mgr.recover_existing() == [1.0, 2.5, 47.0]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
+    def test_recover_existing_removes_tmp_partials(self, tmp_path):
+        (tmp_path / "Chapter 1.cbz").write_bytes(b"a")
+        partial = tmp_path / "Chapter 99.cbz.tmp"
+        partial.write_bytes(b"partial")
 
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    return_value="test-series-id",
-                ):
-                    with patch.object(
-                        matriarch_handler.KomgaAPIClient,
-                        "get_existing_books",
-                        return_value=[98],
-                    ):
-                        with patch.object(
-                            matriarch_handler.VioletScansScraper,
-                            "__init__",
-                            lambda self, url, test_mode=False: None,
-                        ):
-                            with patch.object(
-                                matriarch_handler.VioletScansScraper,
-                                "get_latest_chapter",
-                                return_value=101,
-                            ):
-                                result = matriarch_handler.handler({})
+        mgr = main.ScratchFileManager(tmp_path)
+        result = mgr.recover_existing()
 
-                                assert result["status"] == "success", (
-                                    "Expected success status"
-                                )
-                                assert "dry run" in result["message"].lower(), (
-                                    "Expected 'dry run' in message"
-                                )
-                                assert "chapters_to_download" in result, (
-                                    "Expected chapters_to_download in result"
-                                )
-                                assert result["chapters_to_download"] == [
-                                    99,
-                                    100,
-                                    101,
-                                ], (
-                                    f"Expected [99, 100, 101], got {result['chapters_to_download']}"
-                                )
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in [
-            "SERIES_NAME",
-            "KOMGA_API_URL",
-            "KOMGA_API_KEY",
-            "DRY_RUN",
-            "SCRATCH_PATH",
-        ]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+        assert result == [1.0]
+        assert not partial.exists()
+
+    def test_recover_existing_ignores_unrelated_files(self, tmp_path):
+        (tmp_path / "Chapter 1.cbz").write_bytes(b"a")
+        (tmp_path / "notes.txt").write_bytes(b"junk")
+        (tmp_path / "random.cbz").write_bytes(b"no chapter pattern")  # no number
+        mgr = main.ScratchFileManager(tmp_path)
+        assert mgr.recover_existing() == [1.0]
+
+    def test_recover_existing_returns_empty_when_dir_empty(self, tmp_path):
+        mgr = main.ScratchFileManager(tmp_path)
+        assert mgr.recover_existing() == []
+
+    def test_cleanup_file_removes_existing(self, tmp_path):
+        target = tmp_path / "Chapter 1.cbz"
+        target.write_bytes(b"x")
+        mgr = main.ScratchFileManager(tmp_path)
+        assert mgr.cleanup_file(target) is True
+        assert not target.exists()
+
+    def test_cleanup_file_returns_false_for_missing(self, tmp_path):
+        mgr = main.ScratchFileManager(tmp_path)
+        assert mgr.cleanup_file(tmp_path / "missing.cbz") is False
+
+    def test_cleanup_file_test_mode_no_op(self, tmp_path):
+        target = tmp_path / "Chapter 1.cbz"
+        target.write_bytes(b"x")
+        mgr = main.ScratchFileManager(tmp_path, test_mode=True)
+        assert mgr.cleanup_file(target) is False
+        assert target.exists(), "test_mode should not delete files"
 
 
-def test_handler_exception_handling():
-    """Test handler handles exceptions gracefully"""
-    saved_env = {}
-    for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "TEST_MODE"]:
-        if key in os.environ:
-            saved_env[key] = os.environ[key]
+# ──────────────────────────── _chapter_str ────────────────────────────────
 
-    try:
-        os.environ["SERIES_NAME"] = "Test Series"
-        os.environ["KOMGA_API_URL"] = "http://komga.example.com"
-        os.environ["KOMGA_API_KEY"] = "test-key-12345"
-        if "TEST_MODE" in os.environ:
-            del os.environ["TEST_MODE"]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            os.environ["SCRATCH_PATH"] = str(temp_dir)
+class TestChapterStr:
+    def test_integer_chapter_has_no_decimal(self):
+        assert main._chapter_str(47.0) == "47"
 
-            with patch.object(
-                matriarch_handler.KomgaAPIClient,
-                "__init__",
-                lambda self, url, key, test_mode=False: None,
-            ):
-                with patch.object(
-                    matriarch_handler.KomgaAPIClient,
-                    "get_series_id",
-                    side_effect=Exception("Test exception"),
-                ):
-                    result = matriarch_handler.handler({})
+    def test_decimal_chapter_preserves_fraction(self):
+        assert main._chapter_str(47.5) == "47.5"
 
-                    assert result["status"] == "error", "Expected error status"
-                    assert (
-                        "failed" in result["message"].lower()
-                        or "Test exception" in result["message"]
-                    ), f"Expected error message, got: {result['message']}"
-    finally:
-        for key, value in saved_env.items():
-            os.environ[key] = value
-        for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
-            if key not in saved_env and key in os.environ:
-                del os.environ[key]
+    def test_zero(self):
+        assert main._chapter_str(0.0) == "0"
+
+    def test_negative_handled(self):
+        """Defensive: negative chapter numbers shouldn't crash. Real-world
+        chapter numbers are always non-negative, but the formatter shouldn't
+        explode if a malformed Komga entry slips through."""
+        assert main._chapter_str(-1.0) == "-1"
