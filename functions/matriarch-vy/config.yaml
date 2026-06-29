@@ -1,4 +1,4 @@
 environment: python3-manga-updater
 runtime: python311
-version: "1.0.8"
+version: "1.0.9"
 source: https://github.com/example/functions

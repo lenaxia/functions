@@ -9,10 +9,6 @@ on:
         type: string
         description: Function Name
         required: true
-      release:
-        type: boolean
-        description: Release
-        required: true
 
 jobs:
   prepare:
@@ -152,6 +148,9 @@ jobs:
             -x '*_test.go'
 
       - name: Upload Function Package
+        # This artifact is the source of truth for the function's zip.
+        # The Release workflow's `release` job consumes it (one per
+        # changed function) to bundle them into a single GitHub release.
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ${{ inputs.function }}-package
@@ -160,64 +159,12 @@ jobs:
 
       - name: Run Function Tests
         # Tests gate releases — they run on every build, including the
-        # release path. A test failure fails the Build job, which prevents
-        # the downstream `release` job from creating a GitHub release.
+        # release path. A test failure fails this Build job, which makes
+        # the downstream `release` job in release.yaml skip (since it
+        # depends on `build` succeeding for ALL changed functions).
         uses: ./.github/actions/function-tests
         with:
           function: ${{ inputs.function }}
           language: ${{ steps.function-options.outputs.language }}
           language-version: ${{ steps.function-options.outputs.language-version }}
 
-      - if: ${{ inputs.release }}
-        name: Upload Release Asset
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: ${{ inputs.function }}-release-asset
-          path: functions/${{ inputs.function }}-${{ steps.function-versions.outputs.semantic }}.zip
-          retention-days: 1
-
-  release:
-    if: ${{ inputs.release && needs.prepare.outputs.function-exists == 'true' }}
-    name: Release
-    needs: ["prepare", "build"]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          persist-credentials: false
-
-      - name: Get Function Options
-        id: function-options
-        uses: ./.github/actions/function-options
-        with:
-          function: ${{ inputs.function }}
-
-      - name: Get Release Tag
-        uses: ./.github/actions/release-tag
-        id: release
-        with:
-          token: ${{ github.token }}
-
-      - name: Download Release Asset
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: ${{ inputs.function }}-release-asset
-          path: ${{ runner.temp }}
-
-      - name: Create Release
-        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
-        with:
-          body: |
-            > [!NOTE]
-            > A new function has been added.
-
-            ## 📦 Function
-
-            **Name**: ${{ inputs.function }}
-            **Environment**: ${{ needs.prepare.outputs.environment }}
-            **Language**: ${{ needs.prepare.outputs.language }} ${{ needs.prepare.outputs.runtime }}
-            **Source**: <${{ steps.function-options.outputs.source }}>
-          tag: ${{ steps.release.outputs.tag }}
-          token: ${{ github.token }}
-          artifacts: ${{ runner.temp }}/${{ inputs.function }}-*.zip

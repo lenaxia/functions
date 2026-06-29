@@ -1,5 +1,35 @@
 ---
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+#
+# Release model
+# =============
+# Each function is an independent package with its own version (declared in
+# `functions/<name>/config.yaml`). A push that changes function code:
+#
+#   1. Builds + tests only the changed functions (parallel matrix).
+#   2. Creates one GitHub release PER changed function, with tag
+#      `<function>-<version>` (e.g. `matriarch-1.3.4`).
+#   3. Each release contains exactly one asset: `<function>-<version>.zip`.
+#
+# This means:
+#   - No tag collisions between parallel function builds (each function gets
+#     its own namespace).
+#   - No release noise: a release tag = an actual change to that function.
+#   - Talos-ops-prod Package CRs pin URLs to specific tags
+#     (`releases/download/<function>-<version>/<asset>.zip`) — version bumps
+#     in `config.yaml` are paired with URL bumps in the cluster repo.
+#
+# Workflow inputs
+# ===============
+# - workflow_dispatch with no inputs: builds + tests ALL functions, no release.
+#   Useful for re-running CI on a quiet day.
+# - workflow_dispatch with function=<name> + release=true: forces a single
+#   function's release even if there's no diff (e.g. recovering a missing
+#   asset). The function's config.yaml version must not collide with an
+#   existing tag.
+# - push to main touching functions/**: detects changed functions, builds +
+#   tests them, creates a release per function.
+
 name: Release
 
 on:
@@ -10,11 +40,11 @@ on:
     inputs:
       function:
         type: string
-        description: Function Name
-        required: true
+        description: "Function to build (leave blank to build all)"
+        required: false
       release:
         type: boolean
-        description: Release
+        description: "Create a release (only used when function= is set)"
         required: false
         default: false
 
@@ -23,85 +53,197 @@ jobs:
     name: Prepare
     runs-on: ubuntu-latest
     outputs:
-      changed-files: ${{ steps.changed-files.outputs.changed_files }}
+      # JSON array of functions to build in the matrix.
+      functions: ${{ steps.select.outputs.functions }}
+      # Whether the release step should run (true = real release, false =
+      # test-only).
+      should_release: ${{ steps.select.outputs.should_release }}
     steps:
-      - name: Get Changed Files
-        id: changed-files
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get Changed Files (push event only)
+        id: changed
+        if: github.event_name == 'push'
         uses: bjw-s-labs/action-changed-files@1a5aeab1bfa64d0c4e786f501d5a3f1fad4a24da # v0.4.1
         with:
           path: functions
           include_only_directories: true
           max_depth: 1
 
-  changed:
-    if: ${{ needs.prepare.outputs.changed-files != '[]' || github.event_name == 'workflow_dispatch' }}
-    needs: ["prepare"]
-    name: Get Changed Functions
-    runs-on: ubuntu-latest
-    outputs:
-      functions: ${{ steps.functions.outputs.functions }}
-    steps:
-      - name: Get Functions
-        id: functions
-        # Pass workflow expressions through env vars rather than splicing
-        # them directly into the shell script. action-changed-files emits a
-        # JSON array like ["violetscans"]; splicing that into
-        # CHANGED="${{ … }}" produces broken nested quoting and silently
-        # corrupts the value. Env-var injection is the safe pattern.
+      - name: Select functions and release mode
+        id: select
         env:
           GH_EVENT_NAME: ${{ github.event_name }}
           DISPATCH_FUNCTION: ${{ inputs.function }}
-          CHANGED_FILES: ${{ needs.prepare.outputs.changed-files }}
+          DISPATCH_RELEASE: ${{ inputs.release }}
+          CHANGED_FILES: ${{ steps.changed.outputs.changed_files }}
+        shell: bash
         run: |
           if [ "$GH_EVENT_NAME" == "workflow_dispatch" ]; then
-            printf 'functions=["%s"]\n' "$DISPATCH_FUNCTION" >> "$GITHUB_OUTPUT"
+            if [ -n "$DISPATCH_FUNCTION" ]; then
+              printf 'functions=["%s"]\n' "$DISPATCH_FUNCTION" >> "$GITHUB_OUTPUT"
+              printf 'should_release=%s\n' "$DISPATCH_RELEASE" >> "$GITHUB_OUTPUT"
+            else
+              # No function specified — build ALL functions for testing,
+              # but don't release any of them.
+              all=$(ls -1 functions/ | python3 -c '
+          import sys, json
+          names = [n.strip() for n in sys.stdin if n.strip() and not n.startswith(".")]
+          print(json.dumps(names))
+          ')
+              printf 'functions=%s\n' "$all" >> "$GITHUB_OUTPUT"
+              printf 'should_release=false\n' >> "$GITHUB_OUTPUT"
+            fi
           elif [ -n "$CHANGED_FILES" ] && [ "$CHANGED_FILES" != "[]" ]; then
+            # Push event: build the functions that changed and release them.
             printf 'functions=%s\n' "$CHANGED_FILES" >> "$GITHUB_OUTPUT"
+            printf 'should_release=true\n' >> "$GITHUB_OUTPUT"
           else
+            # Push with no function changes (e.g. only docs/workflow files).
+            # The workflow's `paths` filter should already prevent this, but
+            # handle it gracefully anyway.
             printf 'functions=[]\n' >> "$GITHUB_OUTPUT"
+            printf 'should_release=false\n' >> "$GITHUB_OUTPUT"
           fi
+          echo "Selected: $(grep ^functions= "$GITHUB_OUTPUT")"
+          echo "Release:  $(grep ^should_release= "$GITHUB_OUTPUT")"
 
   build:
-    if: ${{ !cancelled() && needs.changed.result == 'success' && needs.changed.outputs.functions != '[]' }}
-    needs: ["changed"]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.prepare.outputs.functions != '[]' }}
+    needs: ["prepare"]
     name: Build ${{ matrix.function }}
     uses: ./.github/workflows/function-builder.yaml
     permissions:
-      contents: write
+      contents: read
       id-token: write
     secrets: inherit
     strategy:
       matrix:
-        function: ${{ fromJSON(needs.changed.outputs.functions) }}
+        function: ${{ fromJSON(needs.prepare.outputs.functions) }}
+      # fail-fast: false so we see all test failures, not just the first.
       fail-fast: false
       max-parallel: 4
     with:
       function: ${{ matrix.function }}
-      release: ${{ github.event_name == 'workflow_dispatch' && inputs.release || github.event_name == 'push' }}
+
+  release:
+    # Per-function release. Each matrix entry creates its own
+    # `<function>-<version>` tag with one zip asset. No tag-name race between
+    # parallel jobs (different tag per function).
+    if: |
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      needs.prepare.outputs.should_release == 'true' &&
+      needs.prepare.outputs.functions != '[]'
+    needs: ["prepare", "build"]
+    name: Release ${{ matrix.function }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        function: ${{ fromJSON(needs.prepare.outputs.functions) }}
+      fail-fast: false
+      max-parallel: 4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get Function Options
+        id: function-options
+        uses: ./.github/actions/function-options
+        with:
+          function: ${{ matrix.function }}
+
+      - name: Get Function Versions
+        id: function-versions
+        uses: ./.github/actions/function-versions
+        with:
+          upstream-version: ${{ steps.function-options.outputs.version }}
+
+      - name: Check tag does not already exist
+        # Hard-fail if `<function>-<version>` already exists. Forces a config.yaml
+        # version bump for every function change.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FUNCTION: ${{ matrix.function }}
+          VERSION: ${{ steps.function-versions.outputs.semantic }}
+        shell: bash
+        run: |
+          TAG="${FUNCTION}-${VERSION}"
+          echo "Checking for existing tag: $TAG"
+          # gh release view exits 0 if found, non-zero if not.
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            cat >&2 <<EOF
+          ERROR: release tag '$TAG' already exists.
+
+          The function '${FUNCTION}' has been modified but its version in
+          functions/${FUNCTION}/config.yaml is still '${VERSION}'. Bump the
+          version (e.g. PATCH for a bugfix, MINOR for a feature, MAJOR for a
+          breaking change) and push again.
+          EOF
+            exit 1
+          fi
+          echo "Tag '$TAG' is available."
+
+      - name: Download function package
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ${{ matrix.function }}-package
+          path: ${{ runner.temp }}
+
+      - name: Create Release
+        uses: ncipollo/release-action@b7eabc95ff50cbeeedec83973935c8f306dfcd0b # v1.20.0
+        with:
+          tag: ${{ matrix.function }}-${{ steps.function-versions.outputs.semantic }}
+          name: ${{ matrix.function }} ${{ steps.function-versions.outputs.semantic }}
+          body: |
+            > [!NOTE]
+            > Release of the **${{ matrix.function }}** function.
+
+            ## 📦 Function
+
+            **Name**: ${{ matrix.function }}
+            **Version**: ${{ steps.function-versions.outputs.semantic }}
+            **Environment**: ${{ steps.function-options.outputs.environment }}
+            **Language**: ${{ steps.function-options.outputs.language }} ${{ steps.function-options.outputs.runtime }}
+            **Source**: <${{ steps.function-options.outputs.source }}>
+
+            ## Asset
+
+            `${{ matrix.function }}-${{ steps.function-versions.outputs.semantic }}.zip`
+
+            Direct download:
+            ```
+            https://github.com/${{ github.repository }}/releases/download/${{ matrix.function }}-${{ steps.function-versions.outputs.semantic }}/${{ matrix.function }}-${{ steps.function-versions.outputs.semantic }}.zip
+            ```
+          token: ${{ github.token }}
+          artifacts: ${{ runner.temp }}/${{ matrix.function }}-*.zip
+          # Don't mark as latest — this would steal the "latest" flag from
+          # other functions' releases. Each function's release is its own
+          # independent thing.
+          makeLatest: "false"
 
   status:
     if: ${{ !cancelled() }}
-    needs: ["changed", "build"]
+    needs: ["prepare", "build", "release"]
     runs-on: ubuntu-latest
     steps:
       - name: Check for failures
         run: |
-          if [ "${{ needs.changed.result }}" == "failure" ]; then
-            echo "Changed job failed"
-            exit 1
+          if [ "${{ needs.prepare.result }}" == "failure" ]; then
+            echo "Prepare job failed"; exit 1
           fi
           if [ "${{ needs.build.result }}" == "failure" ]; then
-            echo "Build job failed"
-            exit 1
+            echo "Build job failed (one or more functions failed tests)"; exit 1
           fi
-          if [ "${{ needs.build.result }}" == "skipped" ] && [ "${{ needs.changed.result }}" == "success" ]; then
-            echo "Build was skipped but changed succeeded - this means no functions to build"
-            exit 0
+          if [ "${{ needs.release.result }}" == "failure" ]; then
+            echo "Release job failed"; exit 1
           fi
-          if [ "${{ needs.build.result }}" == "success" ]; then
-            echo "All jobs completed successfully"
-            exit 0
-          fi
-          echo "Unexpected job state"
-          echo "Changed: ${{ needs.changed.result }}"
-          echo "Build: ${{ needs.build.result }}"
+          # `skipped` results are fine (e.g. release skipped on test-only dispatch).
+          echo "All jobs completed: prepare=${{ needs.prepare.result }} build=${{ needs.build.result }} release=${{ needs.release.result }}"
