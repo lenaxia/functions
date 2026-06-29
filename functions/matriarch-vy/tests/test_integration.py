@@ -426,3 +426,109 @@ def test_handler_integration_full_workflow():
         for key in ["SERIES_NAME", "KOMGA_API_URL", "KOMGA_API_KEY", "SCRATCH_PATH"]:
             if key not in saved_env and key in os.environ:
                 del os.environ[key]
+
+
+# ─────────────────────────── batching tests ────────────────────────────────
+
+
+def _build_clients_and_scratch(tmp_dir: str):
+    """Build real clients with their network methods unstubbed (we patch
+    per-test)."""
+    scratch = Path(tmp_dir) / "matriarch-vy-test"
+    scratch.mkdir(parents=True)
+    komga = matriarch_vy_handler.KomgaAPIClient(
+        "http://komga.example.com", "test-key", test_mode=False
+    )
+    scraper = matriarch_vy_handler.VyMangaScraper(
+        "https://example.com/series/x", test_mode=False
+    )
+    manager = matriarch_vy_handler.ScratchFileManager(scratch, test_mode=False)
+    return komga, scraper, manager, scratch
+
+
+class TestRunBatching:
+    """Verify that import happens in batches of `batch_size`."""
+
+    def test_batches_imports_when_backlog_exceeds_batch_size(self):
+        """13 missing chapters with batch_size=5 → 3 import calls (5+5+3)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[float(c) for c in range(1, 14)]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                matriarch_vy_handler._run(
+                    komga, scraper, mgr, scratch, "Test", "lib", False,
+                    batch_size=5,
+                )
+
+            assert imp.call_count == 3
+            batch_sizes = [len(call.args[1]) for call in imp.call_args_list]
+            assert batch_sizes == [5, 5, 3], batch_sizes
+
+    def test_single_batch_when_backlog_fits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[1.0, 2.0, 3.0]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                matriarch_vy_handler._run(
+                    komga, scraper, mgr, scratch, "Test", "lib", False,
+                    batch_size=5,
+                )
+
+            assert imp.call_count == 1
+            assert len(imp.call_args.args[1]) == 3
+
+    def test_recovered_files_flushed_before_downloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            for c in [1, 2, 3, 4, 5]:
+                _create_fake_cbz(scratch, f"Chapter {c}.cbz")
+
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                matriarch_vy_handler._run(
+                    komga, scraper, mgr, scratch, "Test", "lib", False,
+                    batch_size=5,
+                )
+
+            batch_sizes = [len(call.args[1]) for call in imp.call_args_list]
+            assert batch_sizes == [5, 2], batch_sizes
+
+    def test_max_downloads_per_run_caps_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[float(c) for c in range(1, 21)]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)) as dl, \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move), \
+                 patch("time.sleep"):
+                matriarch_vy_handler._run(
+                    komga, scraper, mgr, scratch, "Test", "lib", False,
+                    batch_size=5, max_downloads_per_run=7,
+                )
+
+            assert dl.call_count == 7

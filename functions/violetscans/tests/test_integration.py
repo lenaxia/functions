@@ -444,3 +444,199 @@ class TestMainFullWorkflow:
         assert result["secret_name"] == "alpha-series"
         # The scratch subdir is created based on the discovered secret name.
         assert (scratch_root / "alpha-series").exists()
+
+
+# ─────────────────────────── batching tests ────────────────────────────────
+
+
+class TestRunBatching:
+    """Verify that import happens in batches of `batch_size` so a single
+    invocation can make incremental progress on large backlogs.
+    """
+
+    def test_batches_imports_when_backlog_exceeds_batch_size(self):
+        """13 missing chapters with batch_size=5 → 3 import calls (5+5+3)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            all_chapters = list(range(1, 14))  # 13 chapters
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[float(c) for c in all_chapters]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5)
+
+            assert imp.call_count == 3, \
+                f"expected 3 import batches (5+5+3), got {imp.call_count}"
+            # Inspect sizes of each batch.
+            batch_sizes = [len(call.args[1]) for call in imp.call_args_list]
+            assert batch_sizes == [5, 5, 3], batch_sizes
+
+    def test_single_batch_when_backlog_fits(self):
+        """3 missing chapters with batch_size=5 → 1 import call."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[1.0, 2.0, 3.0]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5)
+
+            assert imp.call_count == 1
+            assert len(imp.call_args.args[1]) == 3
+
+    def test_recovered_files_flushed_before_downloads(self):
+        """If we have recovered files >= batch_size and new downloads, the
+        recovered files get imported FIRST in their own batch.
+
+        This means a re-run after a failed import doesn't get blocked behind
+        new downloads — Komga sees the cached work immediately.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            # Seed 5 recovered files.
+            for c in [1.0, 2.0, 3.0, 4.0, 5.0]:
+                _create_fake_cbz(scratch, f"Chapter {int(c)}.cbz")
+
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5)
+
+            # Expected: 1 batch of 5 (recovered), 1 batch of 2 (new downloads).
+            batch_sizes = [len(call.args[1]) for call in imp.call_args_list]
+            assert batch_sizes == [5, 2], batch_sizes
+            # First batch must be the recovered ones (chapters 1-5).
+            first_batch_files = imp.call_args_list[0].args[1]
+            first_batch_chapters = sorted(int(f.stem.split()[1]) for f in first_batch_files)
+            assert first_batch_chapters == [1, 2, 3, 4, 5]
+
+    def test_recovered_files_only_flush_when_no_new_downloads(self):
+        """If we recovered N < batch_size files and there are no new downloads,
+        flush the partial batch anyway — otherwise we'd never import them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            _create_fake_cbz(scratch, "Chapter 1.cbz")
+            _create_fake_cbz(scratch, "Chapter 2.cbz")
+
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[1.0, 2.0]), \
+                 patch.object(scraper, "download_chapter") as dl, \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5)
+
+            dl.assert_not_called()
+            assert imp.call_count == 1
+            assert len(imp.call_args.args[1]) == 2
+
+    def test_max_downloads_per_run_caps_work(self):
+        """When max_downloads_per_run is set, only that many fresh downloads
+        happen per invocation. Remaining missing chapters wait for next run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[float(c) for c in range(1, 21)]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)) as dl, \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move), \
+                 patch("time.sleep"):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5, max_downloads_per_run=7)
+
+            # Only 7 downloads should have been attempted, despite 20 missing.
+            assert dl.call_count == 7
+            downloaded = sorted(c.args[0] for c in dl.call_args_list)
+            assert downloaded == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+
+    def test_max_downloads_does_not_cap_recovered_imports(self):
+        """Cap applies to downloads, NOT to already-recovered files.
+
+        Critical: if a previous run downloaded 50 chapters but failed to
+        import them, we should NOT artificially block them on next run just
+        because max_downloads_per_run=5.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+            # Seed 10 recovered files.
+            for c in range(1, 11):
+                _create_fake_cbz(scratch, f"Chapter {c}.cbz")
+
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[float(c) for c in range(1, 16)]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)) as dl, \
+                 patch.object(komga, "import_books",
+                              side_effect=_import_and_move) as imp, \
+                 patch("time.sleep"):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5, max_downloads_per_run=2)
+
+            # Downloads capped at 2.
+            assert dl.call_count == 2
+            # All 10 recovered chapters should have been imported (in 2 batches of 5)
+            # plus 1 batch of 2 fresh downloads = 3 total import calls.
+            total_imported = sum(len(c.args[1]) for c in imp.call_args_list)
+            assert total_imported == 12, \
+                f"expected 10 recovered + 2 downloaded = 12 imported, got {total_imported}"
+
+    def test_pending_files_carry_over_to_next_run(self):
+        """If Komga doesn't move a batch within the polling timeout, those
+        files remain in scratch (no exception, no retry within same run).
+        Next invocation's recovery logic picks them up."""
+
+        def stuck_import(series_id, file_paths, *args, **kwargs):
+            # Accept the import but don't actually move the files.
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            komga, scraper, mgr, scratch = _build_clients_and_scratch(tmp)
+
+            # Patch time.time to advance past the 300s deadline quickly.
+            fake_clock = [0.0]
+            def fake_time():
+                fake_clock[0] += 100
+                return fake_clock[0]
+
+            with patch.object(komga, "get_series_id", return_value="s-1"), \
+                 patch.object(komga, "get_existing_books", return_value=[]), \
+                 patch.object(scraper, "get_all_chapters",
+                              return_value=[1.0, 2.0]), \
+                 patch.object(scraper, "download_chapter",
+                              side_effect=_make_download_side_effect(scratch)), \
+                 patch.object(komga, "import_books", side_effect=stuck_import), \
+                 patch("time.sleep"), \
+                 patch("time.time", side_effect=fake_time):
+                main._run(komga, scraper, mgr, scratch, "Test", "lib", False,
+                          batch_size=5)
+
+            # The files are still in scratch (Komga never moved them).
+            assert (scratch / "Chapter 1.cbz").exists()
+            assert (scratch / "Chapter 2.cbz").exists()

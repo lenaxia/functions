@@ -301,6 +301,57 @@ class ScratchFileManager:
             return False
 
 
+def _import_batch(
+    komga_client,
+    scratch_manager,
+    scratch_path,
+    series_id,
+    library_id,
+    chapters_to_import,
+):
+    """Import a batch of chapters into Komga and wait for them to move.
+
+    Returns chapter numbers that were NOT successfully moved (still in
+    scratch). The caller treats these as carryover for the next invocation.
+    """
+    if not chapters_to_import:
+        return []
+
+    cbz_files = [
+        scratch_path / f"Chapter {_chapter_str(c)}.cbz" for c in chapters_to_import
+    ]
+    existing_cbz = [f for f in cbz_files if f.exists()]
+    if not existing_cbz:
+        logger.warning(
+            f"Batch import skipped: none of the {len(chapters_to_import)} "
+            f"requested CBZ files exist on disk"
+        )
+        return list(chapters_to_import)
+
+    logger.info(f"Importing batch of {len(existing_cbz)} CBZ file(s) into Komga")
+    if not komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
+        logger.warning("Import API failed for batch, falling back to scan")
+        komga_client.trigger_scan(library_id)
+        return [c for c, f in zip(chapters_to_import, cbz_files) if f.exists()]
+
+    logger.info("Batch import accepted by Komga (async) — polling for completion")
+    deadline = time.time() + 300
+    pending = list(existing_cbz)
+    while pending and time.time() < deadline:
+        time.sleep(3)
+        pending = [f for f in pending if f.exists()]
+
+    if pending:
+        logger.warning(
+            f"{len(pending)} file(s) in batch not moved by Komga within timeout"
+        )
+    else:
+        logger.info(f"Batch of {len(existing_cbz)} file(s) moved by Komga successfully")
+
+    pending_set = set(pending)
+    return [c for c, f in zip(chapters_to_import, cbz_files) if f in pending_set]
+
+
 def _run(
     komga_client,
     vymanga_scraper,
@@ -309,8 +360,15 @@ def _run(
     series_name,
     library_id,
     dry_run,
+    batch_size: int = 5,
+    max_downloads_per_run: Optional[int] = None,
 ):
-    """Core workflow — fetch chapter lists, diff, download missing, import."""
+    """Core workflow — fetch chapter lists, diff, download missing, import.
+
+    Imports happen in batches of `batch_size` so a single invocation makes
+    incremental progress on large backlogs. `max_downloads_per_run`
+    (optional) caps fresh downloads per invocation.
+    """
     try:
         logger.info("Getting series ID from Komga")
         series_id = komga_client.get_series_id(series_name)
@@ -362,45 +420,62 @@ def _run(
                 )
             return
 
-        downloaded = list(to_import_now)
+        if (
+            max_downloads_per_run is not None
+            and len(to_download) > max_downloads_per_run
+        ):
+            logger.info(
+                f"Capping downloads at {max_downloads_per_run} (of "
+                f"{len(to_download)} missing); remaining will be picked up "
+                f"on next run"
+            )
+            to_download = to_download[:max_downloads_per_run]
+
+        downloaded_total = 0
+        failed_downloads = 0
+        imported_total = 0
+        pending_batch: List[float] = list(to_import_now)
+
+        def flush_batch():
+            nonlocal pending_batch, imported_total
+            if not pending_batch:
+                return
+            still_pending = _import_batch(
+                komga_client,
+                scratch_manager,
+                scratch_path,
+                series_id,
+                library_id,
+                pending_batch,
+            )
+            imported_total += len(pending_batch) - len(still_pending)
+            pending_batch = []
+
+        if len(pending_batch) >= batch_size or (pending_batch and not to_download):
+            flush_batch()
+
         for chapter in to_download:
             logger.info(f"Processing Chapter {chapter}")
             try:
                 if vymanga_scraper.download_chapter(chapter, scratch_path):
-                    downloaded.append(chapter)
+                    downloaded_total += 1
+                    pending_batch.append(chapter)
                 else:
                     logger.error(f"Failed Chapter {chapter}")
+                    failed_downloads += 1
             except Exception as e:
                 logger.error(f"Error Chapter {chapter}: {e}")
+                failed_downloads += 1
 
-        if downloaded:
-            cbz_files = [
-                scratch_path / f"Chapter {_chapter_str(c)}.cbz" for c in downloaded
-            ]
-            existing_cbz = [f for f in cbz_files if f.exists()]
-            if existing_cbz:
-                logger.info(f"Importing {len(existing_cbz)} CBZ file(s) into Komga")
-                if komga_client.import_books(series_id, existing_cbz, copy_mode="MOVE"):
-                    logger.info(
-                        "Import accepted by Komga (async) — polling for completion"
-                    )
-                    deadline = time.time() + 300
-                    pending = list(existing_cbz)
-                    while pending and time.time() < deadline:
-                        time.sleep(3)
-                        pending = [f for f in pending if f.exists()]
-                    if pending:
-                        logger.warning(
-                            f"{len(pending)} file(s) not moved by Komga within timeout — keeping in scratch for next run"
-                        )
-                    else:
-                        logger.info("All files moved by Komga successfully")
-                else:
-                    logger.warning("Import API failed, falling back to scan")
-                    komga_client.trigger_scan(library_id)
+            if len(pending_batch) >= batch_size:
+                flush_batch()
 
-        failed = len(to_download) - (len(downloaded) - len(to_import_now))
-        logger.info(f"Done. Downloaded: {len(downloaded)}, Failed: {failed}")
+        flush_batch()
+
+        logger.info(
+            f"Done. Downloaded: {downloaded_total}, Failed: {failed_downloads}, "
+            f"Imported: {imported_total}"
+        )
 
     except Exception as e:
         logger.error(f"Run failed: {e}")
@@ -446,6 +521,22 @@ def main() -> Dict[str, Any]:
     vymanga_scraper = VyMangaScraper(vymanga_url, test_mode=test_mode)
     scratch_manager = ScratchFileManager(scratch_path, test_mode=test_mode)
 
+    # Batch tuning. Defaults: batch_size=5, unbounded downloads per run.
+    def _parse_int(name: str, default: Optional[int]) -> Optional[int]:
+        raw = _secret(name)
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                f"Invalid integer for {name}={raw!r}; using default {default}"
+            )
+            return default
+
+    batch_size = _parse_int("BATCH_SIZE", 5) or 5
+    max_downloads_per_run = _parse_int("MAX_DOWNLOADS_PER_RUN", None)
+
     _run(
         komga_client,
         vymanga_scraper,
@@ -454,6 +545,8 @@ def main() -> Dict[str, Any]:
         series_name,
         library_id,
         dry_run,
+        batch_size=batch_size,
+        max_downloads_per_run=max_downloads_per_run,
     )
 
     return {"status": "success", "message": "Matriarch-VY update completed"}
