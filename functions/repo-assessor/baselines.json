@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "default_category": "media",
+  "baselines": {
+    "media": {
+      "name": "Sonarr",
+      "repo": "Sonarr/Sonarr",
+      "url": "https://github.com/Sonarr/Sonarr",
+      "category_description": "Self-hosted media management (TV, movies, anime, manga, books, music)",
+      "profile": {
+        "repo_age_days": 4380,
+        "avg_commits_per_month": 30,
+        "pct_commits_last_3_months": 8,
+        "contributors": 350,
+        "stars": 12000,
+        "license": "GPL-3.0",
+        "scores": {
+          "code_quality": 4,
+          "release_ci_flow": 5,
+          "test_to_code_ratio": 4,
+          "architectural_robustness": 4
+        },
+        "security": {
+          "internal_only": 5,
+          "reverse_proxy": 4,
+          "sso": 3
+        }
+      },
+      "notes": "Mature .NET Smart PVR. Long-running (10+ years), large contributor base, CI on every PR, extensive test suite, tagged releases with signed artifacts. The reference for media-management tools."
+    },
+    "security": {
+      "name": "Vaultwarden",
+      "repo": "dani-garcia/vaultwarden",
+      "url": "https://github.com/dani-garcia/vaultwarden",
+      "category_description": "Security-sensitive tools (password managers, secrets, auth, identity)",
+      "profile": {
+        "repo_age_days": 2190,
+        "avg_commits_per_month": 18,
+        "pct_commits_last_3_months": 5,
+        "contributors": 280,
+        "stars": 42000,
+        "license": "GPL-3.0",
+        "scores": {
+          "code_quality": 5,
+          "release_ci_flow": 5,
+          "test_to_code_ratio": 4,
+          "architectural_robustness": 5
+        },
+        "security": {
+          "internal_only": 5,
+          "reverse_proxy": 5,
+          "sso": 5
+        }
+      },
+      "notes": "Rust Bitwarden-compatible server. Audited, conservative release cadence, strong secret handling, mandatory HTTPS, SSO via OIDC. The reference for anything that touches credentials."
+    },
+    "dashboard": {
+      "name": "Homer",
+      "repo": "bastienwirtz/homer",
+      "url": "https://github.com/bastienwirtz/homer",
+      "category_description": "Dashboards, startpages, portals, landing pages",
+      "profile": {
+        "repo_age_days": 2190,
+        "avg_commits_per_month": 6,
+        "pct_commits_last_3_months": 4,
+        "contributors": 90,
+        "stars": 9500,
+        "license": "Apache-2.0",
+        "scores": {
+          "code_quality": 4,
+          "release_ci_flow": 4,
+          "test_to_code_ratio": 3,
+          "architectural_robustness": 4
+        },
+        "security": {
+          "internal_only": 5,
+          "reverse_proxy": 5,
+          "sso": 4
+        }
+      },
+      "notes": "Static Vue dashboard. No backend attack surface to speak of, no auth, no DB. Low-risk category reference — anything more complex than Homer should be scrutinised harder."
+    },
+    "networking": {
+      "name": "Pi-hole",
+      "repo": "pi-hole/pi-hole",
+      "url": "https://github.com/pi-hole/pi-hole",
+      "category_description": "Networking, DNS, proxy, VPN, reverse proxy, routing",
+      "profile": {
+        "repo_age_days": 3650,
+        "avg_commits_per_month": 20,
+        "pct_commits_last_3_months": 6,
+        "contributors": 400,
+        "stars": 49000,
+        "license": "EUPL-1.2",
+        "scores": {
+          "code_quality": 4,
+          "release_ci_flow": 4,
+          "test_to_code_ratio": 3,
+          "architectural_robustness": 4
+        },
+        "security": {
+          "internal_only": 4,
+          "reverse_proxy": 3,
+          "sso": 2
+        }
+      },
+      "notes": "Network-level ad blocker with a PHP web UI. Sits on the network edge, handles DNS for everything behind it. Admin UI has had auth issues historically — the reference for 'network-positioned tools with a web UI'."
+    },
+    "monitoring": {
+      "name": "Uptime Kuma",
+      "repo": "louislam/uptime-kuma",
+      "url": "https://github.com/louislam/uptime-kuma",
+      "category_description": "Monitoring, metrics, logging, alerting, status pages",
+      "profile": {
+        "repo_age_days": 1825,
+        "avg_commits_per_month": 35,
+        "pct_commits_last_3_months": 10,
+        "contributors": 250,
+        "stars": 60000,
+        "license": "MIT",
+        "scores": {
+          "code_quality": 4,
+          "release_ci_flow": 4,
+          "test_to_code_ratio": 3,
+          "architectural_robustness": 4
+        },
+        "security": {
+          "internal_only": 5,
+          "reverse_proxy": 4,
+          "sso": 3
+        }
+      },
+      "notes": "Node.js uptime monitor. Very popular, active development. Single-maintainer bus factor is a known concern. Reference for monitoring tools."
+    }
+  }
+}
