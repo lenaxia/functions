@@ -1,0 +1,5 @@
+environment: python3-repo-assessor
+runtime: python311
+language: python
+version: "0.1.0"
+source: https://github.com/lenaxia/functions
