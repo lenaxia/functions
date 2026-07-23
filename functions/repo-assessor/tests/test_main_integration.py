@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -46,7 +47,7 @@ def fresh_submission_data():
         "selftext": "see https://github.com/example/project",
         "url": "https://github.com/example/project",
         "author": "op",
-        "created_utc": 1783900000.0,
+        "created_utc": time.time() - 3600,
         "permalink": "/r/selfhosted/comments/fresh1/i_built_a_thing/",
         "link_flair_text": None,
         "is_self": False,
@@ -61,7 +62,7 @@ def old_submission_data():
         "selftext": "https://github.com/example/old",
         "url": "https://github.com/example/old",
         "author": "op",
-        "created_utc": 1700000000.0,
+        "created_utc": time.time() - 86400 * 7,
         "permalink": "/r/selfhosted/comments/old1/old_post/",
         "link_flair_text": None,
         "is_self": False,
@@ -575,7 +576,7 @@ def test_T_929_run_summary_errors_capped_at_20(
         submissions.append(_make_sub({
             "id": f"sub{i}", "title": "t", "selftext": "https://github.com/o/r",
             "url": "https://github.com/o/r", "author": "x",
-            "created_utc": 1783900000.0, "permalink": f"/p{i}",
+            "created_utc": time.time() - 3600, "permalink": f"/p{i}",
             "link_flair_text": None, "is_self": False,
         }))
     reddit.get_new.return_value = submissions

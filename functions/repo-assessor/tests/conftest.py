@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +140,7 @@ def sample_submission_link() -> dict[str, Any]:
         "selftext": "",
         "url": "https://github.com/example/project",
         "author": "someuser",
-        "created_utc": 1783900000.0,
+        "created_utc": time.time() - 3600,
         "permalink": "/r/selfhosted/comments/abc123/i_built_a_thing/",
         "flair": None,
         "is_self": False,
@@ -154,7 +155,7 @@ def sample_submission_text() -> dict[str, Any]:
         "selftext": "Source at https://github.com/example/dash",
         "url": "",
         "author": "anotheruser",
-        "created_utc": 1783900600.0,
+        "created_utc": time.time() - 3600,
         "permalink": "/r/selfhosted/comments/def456/show_my_homelab_dashboard/",
         "flair": "Show-off",
         "is_self": True,
