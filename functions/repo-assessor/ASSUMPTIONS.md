@@ -69,3 +69,17 @@ Findings reported to llmsafespaces as SDK/server drift.
 ## Reddit read path
 
 Could not be validated from the build sandbox — Reddit's WAF (403) blocks all egress from this IP range regardless of User-Agent. Operator must validate the Reddit read flow locally before deployment. The `responses`-mocked tests cover the SDK code path; the live API shape is documented from Reddit's public OAuth2 wiki and cross-checked against PRAW field names.
+
+### Correction (2026-07-23): Reddit 403 diagnosis
+
+Earlier note claimed Reddit blocks the sandbox IP. That was wrong. Actual cause: Reddit serves a JS PoW (proof-of-work) challenge on the public `.json` endpoints to unauthenticated clients. Verified:
+
+- `GET https://www.reddit.com/` (HTML homepage) → **HTTP 200** from this IP
+- `GET https://www.reddit.com/r/selfhosted/new.json` → HTTP 403 with HTML body containing `<title>Reddit - Please wait for verification</title>` and JS that solves a challenge and submits it
+- Egress IP from sandbox: `76.135.100.247` — same network the operator is on, where Reddit works fine
+- Tried multiple User-Agents (browser string, Reddit API format, curl/8.0.1, empty) — all 403
+- Tried `old.reddit.com`, `oauth.reddit.com` (no auth) — all 403
+
+The function's production code is unaffected: it uses `oauth.reddit.com` with `Authorization: Bearer ...`, which Reddit's bot-detection does not subject to the JS challenge. The sandbox just can't validate the unauthenticated test path.
+
+**Operator action**: validate `reddit_client.find_canonical_sticky` against a real r/selfhosted thread from your local machine (where OAuth requests are the only path that needs to work anyway). The `responses`-mocked tests cover the SDK code path; live validation only needs to confirm the response shape matches.
