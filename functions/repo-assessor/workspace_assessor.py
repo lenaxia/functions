@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,14 @@ class WorkspaceAssessor:
         self._client = client
 
     def create_workspace(self, name: str) -> Any:
-        return self._client.workspaces.create(name=name, runtime=self._runtime)
+        # Use _request directly; published SDK 0.5.4's workspaces.create
+        # raises TypeError on the server's agentNeedsRefresh field.
+        body = {"name": name, "runtime": self._runtime}
+        payload = self._client._request("POST", "/workspaces", json=body)
+        return _WorkspaceHandle(
+            id=payload.get("id", ""),
+            phase=payload.get("phase", ""),
+        )
 
     def wait_for_active(self, workspace_id: str, *, poll_interval: float | None = None) -> Any:
         interval = poll_interval if poll_interval is not None else self._health_interval
@@ -77,8 +85,10 @@ class WorkspaceAssessor:
         return status.get("phase") == "Active"
 
     def create_session(self, workspace_id: str) -> str:
-        response = self._client.sessions.ensure(workspace_id)
-        return response.sessionId
+        # Use _request directly; sessions.ensure hits EnsureSessionResponse
+        # dataclass which is currently fine but matches the pattern.
+        payload = self._client._request("POST", f"/workspaces/{workspace_id}/sessions/new")
+        return payload.get("sessionId", "")
 
     def classify(
         self,
@@ -95,8 +105,7 @@ class WorkspaceAssessor:
             URL=post.url or "",
             GITHUB_REPOS=github_url,
         )
-        response = self._client.sessions.send_message(workspace_id, session_id, prompt)
-        raw = _extract_text(response)
+        raw = _send_and_get_content(self._client, workspace_id, session_id, prompt)
         payload = _parse_json(raw, "classification")
         return _build_classification(payload)
 
@@ -113,8 +122,7 @@ class WorkspaceAssessor:
             REPO_URL=github_url,
             CATEGORY=category.value,
         )
-        response = self._client.sessions.send_message(workspace_id, session_id, prompt)
-        raw = _extract_text(response)
+        raw = _send_and_get_content(self._client, workspace_id, session_id, prompt)
         payload = _parse_json(raw, "assessment")
         return _build_assessment(payload)
 
@@ -122,7 +130,7 @@ class WorkspaceAssessor:
         if not workspace_id:
             return
         try:
-            self._client.workspaces.delete(workspace_id)
+            self._client._request("DELETE", f"/workspaces/{workspace_id}")
         except Exception as e:
             _LOG.warning("failed to delete workspace %s: %s", workspace_id, e)
 
@@ -153,6 +161,34 @@ def _extract_text(response: Any) -> str:
     if isinstance(response, dict):
         return response.get("content") or ""
     return str(response) or ""
+
+
+def _send_and_get_content(client: Any, workspace_id: str, session_id: str, prompt: str) -> str:
+    """Send a message via the SDK and return the assistant's text content.
+
+    Uses _request directly (same code path the SDK's send_message takes,
+    but bypasses the SDK's Workspace/APIKey dataclass construction that
+    is broken in published 0.5.4 against the live server).
+    """
+    body = {
+        "content": prompt,
+        "parts": [{"type": "text", "text": prompt}],
+    }
+    raw = client._request(
+        "POST",
+        f"/workspaces/{workspace_id}/sessions/{session_id}/message",
+        json=body,
+    )
+    if isinstance(raw, dict):
+        parts = raw.get("parts", [])
+        if parts:
+            return "".join(
+                p.get("text", "")
+                for p in parts
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        return raw.get("content") or ""
+    return str(raw) if raw else ""
 
 
 def _parse_json(raw: str, label: str) -> dict:
@@ -298,3 +334,15 @@ def _opt_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value) or None
+
+
+@dataclass(frozen=True)
+class _WorkspaceHandle:
+    """Lightweight workspace handle returned by create_workspace.
+
+    Avoids the SDK's Workspace dataclass, which in published 0.5.4 raises
+    TypeError on the server's agentNeedsRefresh field. Carries only what
+    the orchestrator needs: id + initial phase.
+    """
+    id: str
+    phase: str

@@ -32,15 +32,71 @@ def _minimal_config_dict():
     }
 
 
-def _make_mock_lss_client():
+def _make_mock_lss_client(
+    classify_response: str = '{"is_announcement": true, "is_major_update": false, "category": "media", "reason": "x"}',
+    assess_response: str | None = None,
+    workspace_create_phase: str = "Pending",
+):
+    """Mock LLMSafeSpaces client where _request returns realistic payloads.
+
+    Mirrors the live server response shapes (validated against
+    api.safespaces.dev) — including the agentNeedsRefresh field on
+    workspaces that the published SDK 0.5.4 dataclass doesn't model.
+    """
     m = MagicMock()
-    m.workspaces.create.return_value = MagicMock(id="ws-1", phase="Pending")
     m.workspaces.get_status.return_value = {"phase": "Active"}
-    m.workspaces.delete.return_value = None
-    ensure_resp = MagicMock(sessionId="sess-1")
-    m.sessions.ensure.return_value = ensure_resp
-    m.sessions.send_message.return_value = MagicMock(content='{"is_announcement": true, "is_major_update": false, "category": "media", "reason": "x"}')
+
+    msg_responses: list[str] = [classify_response]
+    if assess_response is not None:
+        msg_responses.append(assess_response)
+
+    msg_iter = iter(msg_responses)
+
+    def fake_request(method, path, json=None, **kwargs):
+        if method == "POST" and path == "/workspaces":
+            return {
+                "id": "ws-1",
+                "name": (json or {}).get("name", ""),
+                "phase": workspace_create_phase,
+                "runtime": (json or {}).get("runtime", ""),
+                "agentNeedsRefresh": False,
+            }
+        if method == "POST" and "/sessions/new" in path:
+            return {"workspaceId": "ws-1", "workspacePhase": "Active", "sessionId": "sess-1", "resumed": False}
+        if method == "POST" and "/message" in path:
+            return _build_send_message_payload(next(msg_iter))
+        if method == "DELETE" and path.startswith("/workspaces/"):
+            return None
+        raise AssertionError(f"unexpected _request call: {method} {path}")
+
+    m._request.side_effect = fake_request
     return m
+
+
+def _set_message_responses(lss, *responses: str) -> None:
+    """Override the message responses returned by _request on a mock client."""
+    msg_iter = iter(responses)
+
+    def fake_request(method, path, json=None, **kwargs):
+        if method == "POST" and "/message" in path:
+            return _build_send_message_payload(next(msg_iter))
+        if method == "POST" and "/sessions/new" in path:
+            return {"workspaceId": "ws-1", "workspacePhase": "Active", "sessionId": "sess-1", "resumed": False}
+        if method == "DELETE":
+            return None
+        raise AssertionError(f"unexpected: {method} {path}")
+
+    lss._request.side_effect = fake_request
+
+
+def _build_send_message_payload(content_text: str) -> dict:
+    """Build a payload shaped like the live /sessions/.../message response."""
+    return {
+        "id": "msg-1",
+        "role": "assistant",
+        "parts": [{"type": "text", "text": content_text}],
+        "metadata": {"tokens": {"input": 100, "output": 50}},
+    }
 
 
 def _load_assessment_payload():
@@ -77,7 +133,15 @@ def test_T_701_create_workspace_calls_sdk_with_name_and_runtime() -> None:
     lss = _make_mock_lss_client()
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     a.create_workspace("assess-xyz")
-    lss.workspaces.create.assert_called_once_with(name="assess-xyz", runtime="python")
+    # _request("POST", "/workspaces", json={"name": ..., "runtime": ...})
+    create_calls = [
+        c for c in lss._request.call_args_list
+        if c.args[0] == "POST" and c.args[1] == "/workspaces"
+    ]
+    assert len(create_calls) == 1
+    body = create_calls[0].kwargs.get("json") or {}
+    assert body.get("name") == "assess-xyz"
+    assert body.get("runtime") == "python"
 
 
 def test_T_702_wait_for_active_polls_until_active() -> None:
@@ -149,7 +213,10 @@ def test_T_708_create_session_returns_session_id() -> None:
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     session_id = a.create_session("ws-1")
     assert session_id == "sess-1"
-    lss.sessions.ensure.assert_called_once_with("ws-1")
+    # _request("POST", "/workspaces/ws-1/sessions/new") was called
+    create_calls = [c for c in lss._request.call_args_list if c.args[0] == "POST" and "/sessions/new" in c.args[1]]
+    assert len(create_calls) == 1
+    assert create_calls[0].args[1] == "/workspaces/ws-1/sessions/new"
 
 
 # Classification ──────────────────────────────────────────────────────────────
@@ -175,7 +242,13 @@ def test_T_709_classify_substitutes_placeholders_parses_json() -> None:
     assert result.is_announcement is True
     assert result.category == Category.MEDIA
 
-    sent_content = lss.sessions.send_message.call_args[0][2]
+    msg_calls = [
+        c for c in lss._request.call_args_list
+        if c.args[0] == "POST" and "/message" in c.args[1]
+    ]
+    assert len(msg_calls) == 1
+    sent_body = msg_calls[0].kwargs.get("json") or {}
+    sent_content = sent_body.get("content", "")
     assert "abc" not in sent_content  # submission id should not appear in prompt
     assert "https://github.com/o/r" in sent_content
 
@@ -184,7 +257,7 @@ def test_T_710_classify_raises_on_non_json_prose() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content="I think this is an announcement.")
+    _set_message_responses(lss, "I think this is an announcement.")
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
@@ -194,7 +267,7 @@ def test_T_711_classify_parses_json_wrapped_in_markdown_fence() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content='```json\n{"is_announcement": false, "is_major_update": false, "category": "other", "reason": "x"}\n```')
+    _set_message_responses(lss, '```json\n{"is_announcement": false, "is_major_update": false, "category": "other", "reason": "x"}\n```')
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     result = a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
     assert result.is_announcement is False
@@ -204,7 +277,7 @@ def test_T_712_classify_parses_json_with_prose_prefix() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content='Here is my response.\n\n{"is_announcement": false, "is_major_update": false, "category": "other", "reason": "x"}\n\nThanks.')
+    _set_message_responses(lss, 'Here is my response.\n\n{"is_announcement": false, "is_major_update": false, "category": "other", "reason": "x"}\n\nThanks.')
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     result = a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
     assert result.is_announcement is False
@@ -214,7 +287,7 @@ def test_T_713_classify_raises_on_missing_required_keys() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content='{"foo": "bar"}')
+    _set_message_responses(lss, '{"foo": "bar"}')
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
@@ -224,7 +297,7 @@ def test_T_714_classify_raises_on_unknown_category() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content='{"is_announcement": true, "is_major_update": false, "category": "totally_made_up", "reason": "x"}')
+    _set_message_responses(lss, '{"is_announcement": true, "is_major_update": false, "category": "totally_made_up", "reason": "x"}')
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
@@ -237,11 +310,16 @@ def test_T_715_assess_substitutes_placeholders_parses_json() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content=json.dumps(_load_assessment_payload()))
+    _set_message_responses(lss, json.dumps(_load_assessment_payload()))
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     result = a.assess("ws-1", "sess-1", "https://github.com/o/r", Category.MEDIA)
     assert isinstance(result, type(a)) or result.metadata.repo_url == "https://github.com/o/r"
-    sent = lss.sessions.send_message.call_args[0][2]
+    msg_calls = [
+        c for c in lss._request.call_args_list
+        if c.args[0] == "POST" and "/message" in c.args[1]
+    ]
+    assert len(msg_calls) == 1
+    sent = (msg_calls[0].kwargs.get("json") or {}).get("content", "")
     assert "https://github.com/o/r" in sent
     assert "media" in sent
 
@@ -250,7 +328,7 @@ def test_T_716_assess_raises_on_malformed_json() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content="{not json}")
+    _set_message_responses(lss, "{not json}")
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.assess("ws-1", "sess-1", "https://github.com/o/r", Category.MEDIA)
@@ -263,7 +341,7 @@ def test_T_717_assess_rejects_score_out_of_range(bad_score: int) -> None:
     payload = _load_assessment_payload()
     payload["analysis"]["code_quality"]["score"] = bad_score
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content=json.dumps(payload))
+    _set_message_responses(lss, json.dumps(payload))
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.assess("ws-1", "sess-1", "https://github.com/o/r", Category.MEDIA)
@@ -276,7 +354,7 @@ def test_T_718_assess_accepts_null_metadata_fields() -> None:
     for k in ["stars", "contributors", "open_issues", "primary_language", "repo_created", "total_commits"]:
         payload["metadata"][k] = None
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content=json.dumps(payload))
+    _set_message_responses(lss, json.dumps(payload))
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     result = a.assess("ws-1", "sess-1", "https://github.com/o/r", Category.MEDIA)
     assert result.metadata.stars is None
@@ -341,7 +419,7 @@ def test_T_723_empty_agent_response_raises_parse_error() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content="")
+    _set_message_responses(lss, "")
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
@@ -351,7 +429,7 @@ def test_T_724_whitespace_only_response_raises_parse_error() -> None:
     workspace_assessor = _import_workspace_assessor()
     cfg = _minimal_config_dict()
     lss = _make_mock_lss_client()
-    lss.sessions.send_message.return_value = MagicMock(content="   \n\t  ")
+    _set_message_responses(lss, "   \n\t  ")
     a = workspace_assessor.WorkspaceAssessor(cfg, lss)
     with pytest.raises(AssessmentParseError):
         a.classify("ws-1", "sess-1", _make_post(), "https://github.com/o/r")
