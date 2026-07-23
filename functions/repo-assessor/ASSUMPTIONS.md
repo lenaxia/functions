@@ -83,3 +83,22 @@ Earlier note claimed Reddit blocks the sandbox IP. That was wrong. Actual cause:
 The function's production code is unaffected: it uses `oauth.reddit.com` with `Authorization: Bearer ...`, which Reddit's bot-detection does not subject to the JS challenge. The sandbox just can't validate the unauthenticated test path.
 
 **Operator action**: validate `reddit_client.find_canonical_sticky` against a real r/selfhosted thread from your local machine (where OAuth requests are the only path that needs to work anyway). The `responses`-mocked tests cover the SDK code path; live validation only needs to confirm the response shape matches.
+
+### Final correction (2026-07-23): Reddit block is real
+
+Followed up by inspecting the actual 403 response body. It is **not** a JS
+PoW challenge — it's a hard "You've been blocked by network security" page
+with a link to reddithelp support. The block is at Reddit's edge against
+this specific egress IP (76.135.100.247, Comcast residential Seattle,
+AS7922). The operator reports Reddit works from their machine on the
+same ASN, so the block is scoped to the specific IP, not the network
+range. Reddit reputation systems likely flagged this IP from prior
+automated traffic.
+
+The function's production path (oauth.reddit.com with Bearer auth) is
+unaffected by this block — OAuth-authenticated API requests take a
+different path through Reddit's edge. Unauthenticated .json endpoints
+from the blocked IP get the network-security page.
+
+Confirmed: not a UA issue (all UAs 403 identically), not solvable by
+executing JS (no challenge to solve).
