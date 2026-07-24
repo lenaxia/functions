@@ -46,6 +46,7 @@ _RECOGNISED_ASSESS_PLACEHOLDERS = set(_ASSESS_PLACEHOLDERS)
 class WorkspaceAssessor:
     def __init__(self, config: dict | Any, client: Any) -> None:
         self._runtime = config.get("llmsafespaces_runtime", "python")
+        self._model = config.get("llmsafespaces_model")
         self._ready_timeout = int(config.get("workspace_ready_timeout", 300))
         self._health_interval = int(config.get("workspace_health_poll_interval", 30))
         self._client = client
@@ -67,6 +68,9 @@ class WorkspaceAssessor:
             status = self._client.workspaces.get_status(workspace_id)
             phase = status.get("phase", "Unknown")
             if phase == "Active":
+                if self._model:
+                    self._client.workspaces.set_model(workspace_id, self._model)
+                    _LOG.info("set model=%s on workspace %s", self._model, workspace_id)
                 return status
             if phase in ("Failed", "Terminated"):
                 raise WorkspaceError(f"workspace {workspace_id} entered terminal phase {phase}")

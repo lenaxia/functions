@@ -37,6 +37,7 @@ class Config:
     llmsafespaces_url: str
     llmsafespaces_api_key: str
     llmsafespaces_runtime: str
+    llmsafespaces_model: str | None
     workspace_ready_timeout: int
     workspace_session_concurrency: int
     workspace_health_poll_interval: int
@@ -119,6 +120,7 @@ def load_config() -> Config:
         llmsafespaces_url=_require("LLMSAFESPACES_URL"),
         llmsafespaces_api_key=_require("LLMSAFESPACES_API_KEY"),
         llmsafespaces_runtime=_get_str("LLMSAFESPACES_RUNTIME", "python"),
+        llmsafespaces_model=_get_str_or_none("LLMSAFESPACES_MODEL"),
         workspace_ready_timeout=_get_int("WORKSPACE_READY_TIMEOUT", 300, min_value=10, max_value=3600),
         workspace_session_concurrency=_get_int("WORKSPACE_SESSION_CONCURRENCY", 3, min_value=1, max_value=20),
         workspace_health_poll_interval=_get_int("WORKSPACE_HEALTH_POLL_INTERVAL", 30, min_value=5, max_value=300),
@@ -198,3 +200,8 @@ def _get_list(name: str) -> list[str]:
     if not raw.strip():
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _get_str_or_none(name: str) -> str | None:
+    raw = os.getenv(name)
+    return raw.strip() if raw and raw.strip() else None
