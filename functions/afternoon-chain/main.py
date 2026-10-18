@@ -36,10 +36,11 @@ def router_url(path: str) -> str:
     return base + path
 
 
-def call_step(path: str, timeout: int, run_date: str) -> dict:
-    req = urllib.request.Request(
-        router_url(path), data=json.dumps({"run_date": run_date}).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+def call_step(path: str, timeout: int) -> dict:
+    # POST with no body: the step functions' main() take no arguments (each
+    # derives run_date from its own clock and is idempotent per run_date)
+    req = urllib.request.Request(router_url(path), method="POST",
+                                 headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode() or "{}")
@@ -67,7 +68,7 @@ def main() -> dict:
         if pre.get(step):
             done.append({"step": step, "skipped": "already_done"})
             continue
-        res = call_step(s["path"], s["timeout"], today)
+        res = call_step(s["path"], s["timeout"])
         ok = bool(res.get("ok"))
         done.append({"step": step, "ok": ok,
                      "already_done": bool(res.get("already_done")),
