@@ -11,7 +11,7 @@ apply directly.
 | --------------------------------------- | -------------------------------------------------------------------------------- |
 | `cnpg-cluster.yaml`                     | `kubernetes/apps/databases/cloudnative-pg/clusters/tradingpg.yaml` (+ kustomization entry) |
 | `db-init.yaml`                          | `kubernetes/apps/databases/cloudnative-pg/clusters/tradingpg-db-init.yaml` (run-once Job; keep out of the kustomization after it completes, or leave it — Jobs are immutable, Flux will flag drift) |
-| `secret-trading.yaml.template`          | encrypt with sops into `tradingpg-app.sops.yaml` (ns databases) and per-function `secret-<fn>.sops.yaml` under `kubernetes/apps/fission/fission/functions/` |
+| `secret-trading.yaml.template`          | encrypt with sops into `clusters/tradingpg-app.sops.yaml` (ns databases, alongside the db-init entry) and per-function `secret-<fn>.sops.yaml` under `kubernetes/apps/fission/fission/functions/trading/` |
 | `fission/packages.yaml`                 | `kubernetes/apps/fission/fission/functions/trading/packages.yaml`                 |
 | `fission/functions.yaml`                | `kubernetes/apps/fission/fission/functions/trading/functions.yaml`                |
 | `fission/triggers.yaml`                 | `kubernetes/apps/fission/fission/httptriggers/trading/triggers.yaml`              |
@@ -32,7 +32,10 @@ Add the new directories to the respective `kustomization.yaml` files
 ## Secrets
 
 Everything flows through sops'd Secrets mounted by Fission at
-`/secrets/fission/<function>/<KEY>`. The template
+`/secrets/fission/trading-<function>/<KEY>` (secret name
+`trading-<function>`, matching the template and the Function CR refs;
+the reader `trading_common.secrets` discovers the mount at runtime).
+The template
 (`secret-trading.yaml.template`) documents the per-function key matrix.
 Never commit plaintext values; generate the role password with
 `openssl rand -base64 24`.

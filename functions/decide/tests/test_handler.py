@@ -174,6 +174,29 @@ class TestDecideHandler:
         assert ci["user"] == "trading"
         assert ci["password"] == password  # round-trips through psycopg
 
+    def test_database_url_failfast_and_url_bypass(self, tmp_path, monkeypatch):
+        # regression: missing PGPASSWORD must fail fast naming the key AND
+        # the mount searched (not an opaque psycopg auth error 3 retries
+        # later); DATABASE_URL must bypass the check (ordering pinned)
+        import pytest
+
+        from trading_common import db as dbmod
+        from trading_common import secrets as tsmod
+
+        base = tmp_path / "no-mount"  # nonexistent -> no discovered mount
+        monkeypatch.setattr(tsmod, "SECRET_BASE_DIR", base)
+        for k in ("DATABASE_URL", "PGPASSWORD", "PGUSER", "PGHOST",
+                  "PGPORT", "PGDATABASE"):
+            monkeypatch.delenv(k, raising=False)
+
+        with pytest.raises(RuntimeError, match="PGPASSWORD") as exc_info:
+            dbmod.database_url()
+        assert str(base) in str(exc_info.value)  # mount_desc no-mount branch
+
+        url = "postgresql://u:p@h:5432/d"
+        monkeypatch.setenv("DATABASE_URL", url)
+        assert dbmod.database_url() == url  # bypass-first, never raises
+
     def test_main_records_prices_for_book_and_plan(self, monkeypatch):
         # regression: payload["prices"] held only plan symbols, so execute's
         # cap math valued non-plan book symbols at notional 0 (cap bypass)

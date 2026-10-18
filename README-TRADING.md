@@ -93,8 +93,9 @@ Upserts only — re-running never double-appends.
 
 ## Deploy steps
 
-1. **This repo**: merge the PR → releases `*-0.1.0.zip` appear (CI builds
-   + tests each function; versions pin the Package URLs).
+1. **This repo**: merge the PR → releases `<fn>-<version>.zip` appear,
+   version per each function's `config.yaml` (CI builds + tests each
+   function; the Package URLs pin those versions).
 2. **talos-ops-prod**: copy `deploy/trading/*` per its README (CNPG
    cluster, sops secrets, db-init Job, Fission Package/Function/trigger
    CRs) + the environment CR from `envs/python3-trading/`.
@@ -165,10 +166,13 @@ Upserts only — re-running never double-appends.
 ## Testing
 
 Every function ships offline pytest suites (`tests/`, run per-function by
-CI — `task local-build-<function>` locally). 53 tests cover the verbatim
+CI — `task local-build-<function>` locally). 69 tests cover the verbatim
 gate/rule/cap math, chain ordering/abort/skip semantics, shadow-mode
-no-order behavior, seed idempotency, the digest watchdog, and the
-regressions for the review-validated defects (per-function conftest
-imports, DB-credential URL escaping, Alpaca positions/clock read
-failures, unpriced-diff cap rejections, decide's book-wide price map, the
-exec rowcount contract, and id-based V228 param selection).
+no-order behavior, seed idempotency, the digest watchdog, the secret
+mount-path contract (trading-<fn> discovery, env fallback, SHADOW=0
+cutover flip honored), the manifest<->template secret-name + package-URL/config version
+cross-validation, and the regressions for the review-validated defects
+(per-function conftest imports, DB-credential URL escaping, Alpaca
+positions/clock read failures, unpriced-diff cap rejections, decide's
+book-wide price map, the exec rowcount contract, and id-based V228
+param selection).
