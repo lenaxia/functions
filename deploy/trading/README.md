@@ -32,7 +32,10 @@ Add the new directories to the respective `kustomization.yaml` files
 ## Secrets
 
 Everything flows through sops'd Secrets mounted by Fission at
-`/secrets/fission/<function>/<KEY>`. The template
+`/secrets/fission/trading-<function>/<KEY>` (secret name
+`trading-<function>`, matching the template and the Function CR refs;
+the reader `trading_common.secrets` discovers the mount at runtime).
+The template
 (`secret-trading.yaml.template`) documents the per-function key matrix.
 Never commit plaintext values; generate the role password with
 `openssl rand -base64 24`.

@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
-from .secrets import secret
+from .secrets import mount_desc, secret
 
 _LOG = logging.getLogger(__name__)
 
@@ -30,6 +30,12 @@ def database_url() -> str:
     db = secret("PGDATABASE", "trading")
     user = secret("PGUSER", "trading")
     pwd = secret("PGPASSWORD")
+    if not pwd:
+        # fail fast with the missing key + where we looked, instead of an
+        # opaque psycopg auth failure three retries later
+        raise RuntimeError(
+            "PGPASSWORD not found (secret mount: %s; environment: unset) — "
+            "provide PGPASSWORD or DATABASE_URL" % mount_desc())
     # percent-encode credentials: the deploy guide's `openssl rand -base64 24`
     # alphabet routinely contains +, /, = (and any password may hold @ : / or
     # whitespace), all of which break raw URL interpolation conninfo parsing
