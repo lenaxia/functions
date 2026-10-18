@@ -1,9 +1,10 @@
-"""Mount-path contract for trading_common.secrets (review Finding 1).
+"""Mount-path contract for trading_common.secrets.
 
-Each trading Function CR mounts exactly one secret, trading-<fn>, at
-/secrets/fission/trading-<fn>/. The reader must discover that mount —
-NOT a hardcoded `trading` name — else every function specializes and
-then fails at runtime on empty credentials.
+Every trading Function CR mounts the ONE shared secret `trading` at
+/secrets/fission/trading/. The reader discovers the single mount at
+runtime (exact shared name preferred on ambiguity, legacy trading-*
+fallback, env per-key last) — a hardcoded or drifted name leaves every
+function failing at runtime on empty credentials.
 
 These tests pin the discovery against a fake mount tree.
 """
@@ -19,9 +20,9 @@ from trading_common import secrets as ts  # noqa: E402
 
 @pytest.fixture()
 def fake_mount(tmp_path, monkeypatch):
-    """Fake /secrets/fission/trading-debate/ mount; returns the dir."""
+    """Fake /secrets/fission/trading/ shared mount; returns the dir."""
     base = tmp_path / "fission"
-    d = base / "trading-debate"
+    d = base / "trading"
     d.mkdir(parents=True)
     monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
     return d
@@ -56,7 +57,7 @@ class TestDiscovery:
     def test_multiple_dirs_prefers_unique_trading_prefix(self, tmp_path, monkeypatch):
         base = tmp_path / "fission"
         (base / "other-secret").mkdir(parents=True)
-        d = base / "trading-debate"
+        d = base / "trading"
         d.mkdir()
         (d / "PGPASSWORD").write_text("picked")
         monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
@@ -77,4 +78,4 @@ class TestDiscovery:
         assert "trading" in ts.mount_desc()
 
     def test_mount_desc_names_the_mount(self, fake_mount):
-        assert "trading-debate" in ts.mount_desc()
+        assert "trading" in ts.mount_desc()

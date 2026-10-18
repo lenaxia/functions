@@ -89,6 +89,16 @@ def test_template_cnpg_bootstrap_secret_contract():
         "CNPG bootstrap username must match the functions' PGUSER"
 
 
+def test_readme_mount_contract_is_current():
+    """README-TRADING.md must describe the deployed secret contract
+    (shared `trading` secret), never the retired per-function one."""
+    body = (_REPO / "README-TRADING.md").read_text()
+    assert "trading-<fn> discovery" not in body, \
+        "stale per-function mount contract wording in README-TRADING.md"
+    assert "shared `trading` secret" in body, \
+        "README-TRADING.md lost the shared-secret contract wording"
+
+
 _PACKAGES = _REPO / "deploy" / "trading" / "fission" / "packages.yaml"
 
 

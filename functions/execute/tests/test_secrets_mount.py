@@ -16,7 +16,7 @@ from trading_common import secrets as ts  # noqa: E402
 @pytest.fixture()
 def fake_mount(tmp_path, monkeypatch):
     base = tmp_path / "fission"
-    d = base / "trading-execute"
+    d = base / "trading"
     d.mkdir(parents=True)
     monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
     return d
