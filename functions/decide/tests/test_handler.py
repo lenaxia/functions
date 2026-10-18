@@ -128,6 +128,24 @@ class TestTradeRules:
 
 
 class TestDecideHandler:
+    def test_database_url_quotes_special_chars(self, monkeypatch):
+        # regression: raw URL interpolation broke conninfo parsing for any
+        # password with @ : / + = or whitespace (openssl rand -base64 alphabet)
+        from trading_common import db as dbmod
+
+        password = "aB3+/=xY z@w:9"
+        monkeypatch.setenv("PGUSER", "trading")
+        monkeypatch.setenv("PGPASSWORD", password)
+        monkeypatch.setattr(dbmod, "secret",
+                            lambda name, default="": {"PGUSER": "trading",
+                                                      "PGPASSWORD": password}.get(name, default))
+        url = dbmod.database_url()
+        assert password not in url  # never the raw bytes in the URL
+        from psycopg.conninfo import conninfo_to_dict
+        ci = conninfo_to_dict(url)
+        assert ci["user"] == "trading"
+        assert ci["password"] == password  # round-trips through psycopg
+
     def test_shadow_sync_and_fallback(self, monkeypatch):
         sys.path.insert(0, str(ROOT / "functions" / "decide"))
         import main as decide

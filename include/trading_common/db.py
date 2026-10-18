@@ -13,15 +13,13 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .secrets import secret
 
 _LOG = logging.getLogger(__name__)
 
 SCHEMA_SQL = (Path(__file__).resolve().parent / "schema.sql").read_text()
-
-
-import urllib.parse as _up
 
 
 def database_url() -> str:
@@ -33,7 +31,11 @@ def database_url() -> str:
     db = secret("PGDATABASE", "trading")
     user = secret("PGUSER", "trading")
     pwd = secret("PGPASSWORD")
-    return "postgresql://%s:%s@%s:%s/%s" % (_up.quote(user, safe=""), _up.quote(pwd, safe=""), host, port, db)
+    # percent-encode credentials: the deploy guide's `openssl rand -base64 24`
+    # alphabet routinely contains +, /, = (and any password may hold @ : / or
+    # whitespace), all of which break raw URL interpolation conninfo parsing
+    return "postgresql://%s:%s@%s:%s/%s" % (
+        quote(user, safe=""), quote(pwd, safe=""), host, port, db)
 
 
 class TradingDB:
