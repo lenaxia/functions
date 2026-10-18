@@ -70,6 +70,61 @@ class TestAlpacaPort:
         assert len(orders) == 1
         assert rej and "total notional cap" in rej[0]["reason"]
 
+    def test_account_state_fails_on_positions_error(self):
+        # regression: a failed /positions read became held={} -> a bogus
+        # "reconcile everything" plan instead of failing the run
+        from trading_common.alpaca import account_state
+
+        class FakeAPI:
+            def api(self, method, path, body=None):
+                if path == "/account":
+                    return {"equity": "500000", "cash": "100000"}
+                if path == "/clock":
+                    return {"is_open": True}
+                if path == "/positions":
+                    return {"_error": "HTTP 403 Forbidden"}
+                raise AssertionError(path)
+
+        st = account_state(FakeAPI())
+        assert st["ok"] is False and "positions" in st["error"]
+
+    def test_account_state_fails_on_clock_error(self):
+        # regression: a failed /clock read became open=False -> "market
+        # closed — diff queued" with ok: True instead of failing the run
+        from trading_common.alpaca import account_state
+
+        class FakeAPI:
+            def api(self, method, path, body=None):
+                if path == "/account":
+                    return {"equity": "500000", "cash": "100000"}
+                if path == "/clock":
+                    return {"_error": "HTTP 502 Bad Gateway"}
+                if path == "/positions":
+                    return [{"symbol": "NVDA", "qty": "5", "market_value": "1000"}]
+                raise AssertionError(path)
+
+        st = account_state(FakeAPI())
+        assert st["ok"] is False and "clock" in st["error"]
+
+    def test_account_state_ok_lists_held(self):
+        from trading_common.alpaca import account_state
+
+        class FakeAPI:
+            def api(self, method, path, body=None):
+                if path == "/account":
+                    return {"equity": "500000", "cash": "100000"}
+                if path == "/clock":
+                    return {"is_open": True}
+                if path == "/positions":
+                    return [{"symbol": "NVDA", "qty": "5", "market_value": "1000"},
+                            {"symbol": "T", "qty": "10", "market_value": "250.5"}]
+                raise AssertionError(path)
+
+        st = account_state(FakeAPI())
+        assert st["ok"] is True and st["open"] is True
+        assert st["held"] == {"NVDA": 5.0, "T": 10.0}
+        assert st["held_value"] == 1250.5
+
 
 class TestExecuteHandler:
     def test_target_book_applies_plan(self, monkeypatch):

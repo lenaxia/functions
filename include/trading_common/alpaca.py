@@ -73,15 +73,16 @@ def account_state(api: Alpaca) -> dict:
     if "_error" in acct:
         return {"ok": False, "error": acct["_error"]}
     clock = api.api("GET", "/clock")
+    if "_error" in clock:
+        return {"ok": False, "error": "clock: %s" % clock["_error"]}
     positions = api.api("GET", "/positions")
-    if isinstance(positions, dict) and "_error" in positions:
-        return {"ok": False, "error": "positions read failed: %s" % positions["_error"]}
-    if isinstance(clock, dict) and "_error" in clock:
-        return {"ok": False, "error": "clock read failed: %s" % clock["_error"]}
-    held = ({p["symbol"]: float(p["qty"]) for p in positions}
-            if isinstance(positions, list) else {})
-    held_value = (sum(float(p["market_value"]) for p in positions)
-                  if isinstance(positions, list) else 0.0)
+    if not isinstance(positions, list):
+        # api() returns {"_error": ...} on HTTP/transport failures; a failed
+        # positions read must fail the run (an empty-held reconcile plan is
+        # indistinguishable from "sell/buy everything" drift)
+        return {"ok": False, "error": "positions: %s" % positions.get("_error", positions)}
+    held = {p["symbol"]: float(p["qty"]) for p in positions}
+    held_value = sum(float(p["market_value"]) for p in positions)
     return {"ok": True, "open": bool(clock.get("is_open")),
             "equity": float(acct.get("equity") or 0.0),
             "cash": float(acct.get("cash") or 0.0),
