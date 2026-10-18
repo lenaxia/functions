@@ -12,7 +12,6 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote
 
 from .secrets import secret
@@ -66,10 +65,12 @@ class TradingDB:
                 cur.execute(SCHEMA_SQL)
 
     # -- low-level helpers (repo-assessor pattern) --------------------------
-    def exec(self, sql: str, params: tuple = ()) -> Any:
+    def exec(self, sql: str, params: tuple = ()) -> int:
+        """Execute and return rowcount (a cursor returned here would already
+        be closed once the with-block exits — a future-use trap)."""
         with self._conn.cursor() as cur:
             cur.execute(sql, params)
-            return cur
+            return cur.rowcount
 
     def one(self, sql: str, params: tuple = ()) -> tuple | None:
         with self._conn.cursor() as cur:

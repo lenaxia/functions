@@ -128,6 +128,34 @@ class TestTradeRules:
 
 
 class TestDecideHandler:
+    def test_exec_returns_rowcount_not_cursor(self):
+        # regression: exec() returned the cursor AFTER its with-block closed
+        # it — the first caller to use the return value would fail
+        from trading_common.db import TradingDB
+
+        class StubCursor:
+            closed = False
+            rowcount = 3
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.closed = True
+                return False
+
+            def execute(self, sql, params=()):
+                pass
+
+        class StubConn:
+            def cursor(self):
+                return StubCursor()
+
+        db = TradingDB.__new__(TradingDB)
+        db._conn = StubConn()
+        db._closed = False
+        assert db.exec("INSERT INTO events VALUES (1, 't', '{}')") == 3
+
     def test_database_url_quotes_special_chars(self, monkeypatch):
         # regression: raw URL interpolation broke conninfo parsing for any
         # password with @ : / + = or whitespace (openssl rand -base64 alphabet)
