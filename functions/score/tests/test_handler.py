@@ -47,6 +47,23 @@ class TestControlPort:
 
 
 class TestScoreHandler:
+    def test_v228_engine_params_selected_by_id_not_position(self):
+        # regression: the v2 engine params were read from VARIANT_SPECS[4] by
+        # list position — a reorder silently replayed both v2 variants with
+        # wrong params (or KeyError) and corrupted the forward evidence
+        import copy
+        from trading_common import forward as fwd
+
+        expected = {"n": 1, "kvol": 2.0, "y": 10.0, "sel": 3, "z_exit": 5.0}
+        assert fwd.v2_engine_params(fwd.VARIANT_SPECS) == expected  # today
+
+        specs = copy.deepcopy(fwd.VARIANT_SPECS)
+        v228 = next(s for s in specs if s["id"].startswith("V228"))
+        specs.remove(v228)
+        specs.insert(0, v228)                       # V228 first ...
+        assert specs[4]["id"] != v228["id"]         # ... index 4 is another variant
+        assert fwd.v2_engine_params(specs) == expected  # params follow identity
+
     def test_load_sleeve_falls_back_to_db(self, monkeypatch):
         import main as score
         from conftest import FakeDB

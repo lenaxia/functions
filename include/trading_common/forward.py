@@ -116,6 +116,14 @@ VARIANT_SPECS = [
 ]
 
 
+def v2_engine_params(specs: list[dict]) -> dict:
+    """Engine params for the v2 mean-reversion families, selected by variant
+    identity — never by list position (V306's spec params are the overlay's
+    own base/trigger/cash config, not the engine's n/kvol/y/sel/z_exit)."""
+    return next(s["params"] for s in specs
+                if s["family"] == "meanrev_vol" and s["id"].startswith("V228"))
+
+
 # --------------------------------------------------------------------------
 # Data layer
 # --------------------------------------------------------------------------
@@ -685,7 +693,7 @@ def build_state(dates, px, fetch_manifest, dropped):
             strat = Fixed(px, {s: SLEEVE for s in UNIVERSE})
             series, trades, last_w, eq, _m, _e = run_v1(strat, px, dates, fi, "baseline")
         else:
-            p = VARIANT_SPECS[4]["params"]
+            p = v2_engine_params(VARIANT_SPECS)
             rows, reasons = meanrev_vol_rows(px, p["n"], p["kvol"], p["y"],
                                              p["sel"], p["z_exit"])
             series, trades, last_w, eq, fires, _m, _e = run_v2(
