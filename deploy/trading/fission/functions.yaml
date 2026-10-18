@@ -25,7 +25,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: debate
+    - name: trading-debate
       namespace: fission
   functionTimeout: 2400
   InvokeStrategy:
@@ -51,7 +51,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: decide
+    - name: trading-decide
       namespace: fission
   functionTimeout: 480
   InvokeStrategy:
@@ -77,7 +77,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: execute
+    - name: trading-execute
       namespace: fission
   functionTimeout: 300
   InvokeStrategy:
@@ -103,7 +103,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: score
+    - name: trading-score
       namespace: fission
   functionTimeout: 900
   InvokeStrategy:
@@ -129,7 +129,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: digest
+    - name: trading-digest
       namespace: fission
   functionTimeout: 120
   InvokeStrategy:
@@ -155,7 +155,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: morning-chain
+    - name: trading-morning-chain
       namespace: fission
   functionTimeout: 3480
   InvokeStrategy:
@@ -181,7 +181,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: afternoon-chain
+    - name: trading-afternoon-chain
       namespace: fission
   functionTimeout: 1140
   InvokeStrategy:
@@ -207,7 +207,7 @@ spec:
       namespace: fission
     functionName: main
   secrets:
-    - name: trading-seed
+    - name: trading-trading-seed
       namespace: fission
   functionTimeout: 300
   InvokeStrategy:
