@@ -99,6 +99,31 @@ def test_readme_mount_contract_is_current():
         "README-TRADING.md lost the shared-secret contract wording"
 
 
+def test_readme_test_count_matches_suites():
+    """The README's "<N> tests" figure must equal the AST-counted test
+    functions across the 8 trading suites (module-level + methods)."""
+    import ast
+
+    body = (_REPO / "README-TRADING.md").read_text()
+    m = re.search(r"(\d+) tests cover", body)
+    assert m, "README-TRADING.md lost its test-count sentence"
+    stated = int(m.group(1))
+
+    def count_tests(tree):
+        n = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+                n += 1
+        return n
+
+    actual = 0
+    for fn in sorted(EXPECTED_FUNCTIONS):
+        for tf in (_REPO / "functions" / fn / "tests").glob("test_*.py"):
+            actual += count_tests(ast.parse(tf.read_text()))
+    assert stated == actual, \
+        f"README claims {stated} tests; the suites define {actual}"
+
+
 _PACKAGES = _REPO / "deploy" / "trading" / "fission" / "packages.yaml"
 
 
