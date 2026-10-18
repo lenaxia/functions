@@ -73,6 +73,22 @@ def test_template_shared_key_set_is_complete():
             f"template missing key {key} in the shared secret"
 
 
+def test_template_cnpg_bootstrap_secret_contract():
+    """tradingpg-app must match CNPG's bootstrap.initdb.secret contract:
+    kubernetes.io/basic-auth with username+password, and username must
+    equal the PGUSER the functions authenticate as."""
+    docs = [d for d in yaml.safe_load_all(_TEMPLATE.read_text()) if d]
+    app = docs[0]
+    assert app["metadata"]["name"] == "tradingpg-app"
+    assert app["metadata"]["namespace"] == "databases"
+    assert app["type"] == "kubernetes.io/basic-auth"
+    for key in ("username", "password"):
+        assert key in app["stringData"], f"tradingpg-app missing {key}"
+    shared = docs[1]
+    assert app["stringData"]["username"] == shared["stringData"]["PGUSER"], \
+        "CNPG bootstrap username must match the functions' PGUSER"
+
+
 _PACKAGES = _REPO / "deploy" / "trading" / "fission" / "packages.yaml"
 
 

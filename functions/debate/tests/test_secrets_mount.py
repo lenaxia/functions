@@ -63,5 +63,18 @@ class TestDiscovery:
         monkeypatch.delenv("PGPASSWORD", raising=False)
         assert ts.secret("PGPASSWORD") == "picked"
 
+    def test_two_mounts_resolves_shared_trading_mount(self, tmp_path, monkeypatch):
+        # shared-secret deploy: exact `trading` dir must win over any
+        # unrelated mount (the trading-* prefix branch alone found nothing)
+        base = tmp_path / "fission"
+        (base / "unrelated").mkdir(parents=True)
+        d = base / "trading"
+        d.mkdir()
+        (d / "PGPASSWORD").write_text("from-shared-mount")
+        monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
+        monkeypatch.delenv("PGPASSWORD", raising=False)
+        assert ts.secret("PGPASSWORD") == "from-shared-mount"
+        assert "trading" in ts.mount_desc()
+
     def test_mount_desc_names_the_mount(self, fake_mount):
         assert "trading-debate" in ts.mount_desc()

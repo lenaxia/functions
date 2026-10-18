@@ -154,9 +154,9 @@ Upserts only — re-running never double-appends.
    equal the final GHA book; verify with
    `SELECT symbol, qty, entry FROM positions ORDER BY symbol;` vs
    `state/book.json`.
-4. **Flip execute**: set `SHADOW=0` in the `execute` secret
-   (sops-edit + commit). Verify the next run places real paper orders and
-   records `price`/`slippage_bps` on fills.
+4. **Flip execute**: set `SHADOW=0` in the shared `trading` secret
+   (one key, sops-edit + commit). Verify the next run places real paper
+   orders and records `price`/`slippage_bps` on fills.
 5. **Disable the GHA schedules** in `lenaxia/ai-trading`: comment out the
    `schedule:` blocks in `.github/workflows/daily.yml` and
    `scoreboard.yml` (leave `workflow_dispatch` for manual fallback).
@@ -169,7 +169,7 @@ Upserts only — re-running never double-appends.
 ## Testing
 
 Every function ships offline pytest suites (`tests/`, run per-function by
-CI — `task local-build-<function>` locally). 69 tests cover the verbatim
+CI — `task local-build-<function>` locally). 72 tests cover the verbatim
 gate/rule/cap math, chain ordering/abort/skip semantics, shadow-mode
 no-order behavior, seed idempotency, the digest watchdog, the secret
 mount-path contract (trading-<fn> discovery, env fallback, SHADOW=0

@@ -49,3 +49,15 @@ class TestExecuteKeys:
     def test_missing_everything_still_fails_closed_to_shadow(self, fake_mount, monkeypatch):
         monkeypatch.delenv("SHADOW", raising=False)
         assert ts.flag("SHADOW") is True
+
+    def test_two_mounts_resolves_shared_trading_mount(self, tmp_path, monkeypatch):
+        # shared-secret deploy: exact `trading` dir must win over any
+        # unrelated mount
+        base = tmp_path / "fission"
+        (base / "unrelated").mkdir(parents=True)
+        d = base / "trading"
+        d.mkdir()
+        (d / "ALPACA_PAPER_API_KEY").write_text("from-shared-mount")
+        monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
+        monkeypatch.delenv("ALPACA_PAPER_API_KEY", raising=False)
+        assert ts.secret("ALPACA_PAPER_API_KEY") == "from-shared-mount"
