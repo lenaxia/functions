@@ -15,11 +15,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
 from .secrets import secret
+
+_LOG = logging.getLogger(__name__)
 
 UA_Y = {"User-Agent": "Mozilla/5.0"}
 
@@ -117,16 +120,22 @@ def evaluate_caps(diffs_list: list[dict], prices: dict[str, float],
                   held_value: float, caps: dict) -> tuple[list[dict], list[dict]]:
     """Live-mode guard math (verbatim): per-order cap, projected-book cap and
     run cumulative-buy cap. Sells first (the bridge sorts the diff list the
-    same way before its order loop). Returns (orders, rejections)."""
+    same way before its order loop). Returns (orders, rejections).
+
+    A diff without a recorded price is REJECTED, never valued at 0 — a
+    notional of 0 passes every cap and the journal would record
+    assumed_price 0 (structural cap bypass on the live path)."""
     orders, rejections = [], []
     buy_ledger = 0.0
     projected_book = held_value
     for d in sorted(diffs_list, key=lambda x: x["action"] != "sell"):
         sym, qty = d["symbol"], int(d["qty"])
-        px = prices.get(sym) or 0.0
-        if d["action"] == "buy" and (not px or px <= 0):
-            rejections.append({"symbol": sym, "side": "buy", "qty": qty,
-                               "reason": "no price available - cap bypass guard"})
+        px = prices.get(sym)
+        if not px:
+            _LOG.warning("rejecting %s %s x%d: no price recorded — cap math "
+                         "would be blind (notional 0)", d["action"], sym, qty)
+            rejections.append({"symbol": sym, "side": d["action"], "qty": qty,
+                               "reason": "no price recorded for %s — order skipped" % sym})
             continue
         notional = qty * px
         if d["action"] == "buy":

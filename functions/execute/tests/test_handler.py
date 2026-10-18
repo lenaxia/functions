@@ -70,6 +70,25 @@ class TestAlpacaPort:
         assert len(orders) == 1
         assert rej and "total notional cap" in rej[0]["reason"]
 
+    def test_evaluate_caps_rejects_missing_price_buy(self):
+        # regression: a buy for a symbol absent from prices used to value at
+        # notional 0.0 — passing every cap and journaling assumed_price 0
+        from trading_common.alpaca import evaluate_caps
+        caps = _caps(100000.0)
+        diffs = [{"symbol": "DRIFT", "action": "buy", "qty": 10}]
+        orders, rej = evaluate_caps(diffs, {}, 0.0, caps)
+        assert orders == []                       # no zero-notional order
+        assert len(rej) == 1 and rej[0]["side"] == "buy"
+        assert rej[0]["symbol"] == "DRIFT"
+        assert "no price" in rej[0]["reason"]
+
+    def test_evaluate_caps_rejects_missing_price_sell(self):
+        from trading_common.alpaca import evaluate_caps
+        caps = _caps(100000.0)
+        diffs = [{"symbol": "DRIFT", "action": "sell", "qty": 10}]
+        orders, rej = evaluate_caps(diffs, {}, 0.0, caps)
+        assert orders == [] and "no price" in rej[0]["reason"]
+
     def test_account_state_fails_on_positions_error(self):
         # regression: a failed /positions read became held={} -> a bogus
         # "reconcile everything" plan instead of failing the run

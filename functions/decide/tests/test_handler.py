@@ -146,6 +146,48 @@ class TestDecideHandler:
         assert ci["user"] == "trading"
         assert ci["password"] == password  # round-trips through psycopg
 
+    def test_main_records_prices_for_book_and_plan(self, monkeypatch):
+        # regression: payload["prices"] held only plan symbols, so execute's
+        # cap math valued non-plan book symbols at notional 0 (cap bypass)
+        sys.path.insert(0, str(ROOT / "functions" / "decide"))
+        import main as decide
+        from conftest import FakeDB
+
+        db = FakeDB()
+        monkeypatch.setattr(decide, "TradingDB", lambda: db)
+        monkeypatch.setattr(decide.gitstate, "read_json",
+                            lambda p: {"cash": 25000.0,
+                                       "positions": {"NVDA": {"qty": 5, "entry": 200.0},
+                                                     "HELD": {"qty": 2, "entry": 50.0}}}
+                            if p == "state/book.json" else None)
+        monkeypatch.setattr(decide.marketdata, "snapshot", lambda: {
+            "stocks": [{"sym": "NVDA", "price": 210.0},
+                       {"sym": "HELD", "price": 51.0},
+                       {"sym": "AMD", "price": 100.0},
+                       {"sym": "SPY", "price": 500.0}]})
+        monkeypatch.setattr(
+            decide.trade_rules, "build_decision",
+            lambda book, snap, now=None: {"market_open": True, "account": {"cash": book["cash"]},
+                                          "exits": [], "entries": []})
+        monkeypatch.setattr(
+            decide, "trading_gates",
+            lambda dec, debate, trades: (
+                [{"symbol": "NVDA", "quantity": 5}],
+                [{"symbol": "AMD", "quantity": 10}], []))
+        journaled = []
+        monkeypatch.setattr(decide.gitstate, "journal",
+                            lambda date, step, payload: journaled.append((step, payload)))
+
+        out = decide.main()
+        assert out["ok"] and out["debate_fallback"] is True
+        # book symbols (incl. non-plan HELD) AND plan symbols are priced
+        assert out["prices"] == {"AMD": 100.0, "HELD": 51.0, "NVDA": 210.0}
+        # idempotent: re-run skips, decision payload persisted as recorded
+        assert decide.main()["already_done"] is True
+        row = db.get_decision(out["date"], "decide")
+        assert row["status"] == "ok" and row["payload"]["prices"] == out["prices"]
+        assert journaled and journaled[0][0] == "decide"
+
     def test_shadow_sync_and_fallback(self, monkeypatch):
         sys.path.insert(0, str(ROOT / "functions" / "decide"))
         import main as decide

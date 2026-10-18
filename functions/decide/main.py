@@ -78,6 +78,14 @@ def main() -> dict:
         trades_today = db.trades_today(today)
         exits_ok, gated_entries, gate_log = trading_gates(decision, debate, trades_today)
 
+        # prices for execute's cap math: every book symbol plus the plan's
+        # (execute's diff covers the union of DB book and broker holdings —
+        # an unpriced symbol there must be a visible rejection, never a
+        # zero-notional order)
+        price_syms = (set(book.get("positions") or {})
+                      | {e["symbol"] for e in exits_ok}
+                      | {e["symbol"] for e in gated_entries})
+
         payload = {
             "ok": True,
             "date": today,
@@ -91,10 +99,7 @@ def main() -> dict:
             "entries": gated_entries,
             "gate_log": gate_log,
             "trades_today_before": trades_today,
-            "prices": {e["symbol"]: prices.get(e["symbol"]) for e in exits_ok}
-            | {e["symbol"]: prices.get(e["symbol"]) for e in gated_entries}
-            | {sym: prices.get(sym) for sym, h in (book.get("positions") or {}).items()
-               if h.get("qty", 0) > 0 and prices.get(sym)},
+            "prices": {s: prices.get(s) for s in sorted(price_syms)},
         }
         db.record_decision(today, "decide", payload, status="ok")
         db.mark_step(today, "decide")
