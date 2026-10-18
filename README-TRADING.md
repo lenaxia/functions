@@ -97,16 +97,19 @@ Upserts only — re-running never double-appends.
    version per each function's `config.yaml` (CI builds + tests each
    function; the Package URLs pin those versions).
 2. **talos-ops-prod**: copy `deploy/trading/*` per its README (CNPG
-   cluster, sops secrets, db-init Job, Fission Package/Function/trigger
-   CRs) + the environment CR from `envs/python3-trading/`.
-3. Run the db-init Job, then `POST /trading-seed` once via the router.
+   cluster with initdb bootstrap, two sops secrets, Fission
+   Package/Function/trigger CRs) + the environment CR from
+   `envs/python3-trading/`.
+3. `POST /trading-seed` once via the router (role+db are created by the
+   CNPG initdb bootstrap from the `tradingpg-app` secret — no db-init
+   Job).
 4. Watch the next 13:45 / 22:30 UTC runs:
    `fission function logs --name morning-chain --follow`, and
    `SELECT * FROM step_completions ORDER BY ts DESC LIMIT 10;` on trading.
 
 ## Shadow mode (comparison week)
 
-`SHADOW=1` in each secret (deployment default):
+`SHADOW=1` in the shared `trading` secret (deployment default):
 
 - All functions write the DB (decisions, fills-as-shadow, equity, events,
   step_completions) and the git journal (`ai-trading` repo,
@@ -151,9 +154,9 @@ Upserts only — re-running never double-appends.
    equal the final GHA book; verify with
    `SELECT symbol, qty, entry FROM positions ORDER BY symbol;` vs
    `state/book.json`.
-4. **Flip execute**: set `SHADOW=0` in the `execute` secret
-   (sops-edit + commit). Verify the next run places real paper orders and
-   records `price`/`slippage_bps` on fills.
+4. **Flip execute**: set `SHADOW=0` in the shared `trading` secret
+   (one key, sops-edit + commit). Verify the next run places real paper
+   orders and records `price`/`slippage_bps` on fills.
 5. **Disable the GHA schedules** in `lenaxia/ai-trading`: comment out the
    `schedule:` blocks in `.github/workflows/daily.yml` and
    `scoreboard.yml` (leave `workflow_dispatch` for manual fallback).
@@ -166,11 +169,12 @@ Upserts only — re-running never double-appends.
 ## Testing
 
 Every function ships offline pytest suites (`tests/`, run per-function by
-CI — `task local-build-<function>` locally). 69 tests cover the verbatim
+CI — `task local-build-<function>` locally). 75 tests cover the verbatim
 gate/rule/cap math, chain ordering/abort/skip semantics, shadow-mode
 no-order behavior, seed idempotency, the digest watchdog, the secret
-mount-path contract (trading-<fn> discovery, env fallback, SHADOW=0
-cutover flip honored), the manifest<->template secret-name + package-URL/config version
+mount-path contract (shared `trading` mount discovery, env fallback,
+SHADOW=0 cutover flip honored), the manifest<->template secret-name +
+package-URL/config version
 cross-validation, and the regressions for the review-validated defects
 (per-function conftest imports, DB-credential URL escaping, Alpaca
 positions/clock read failures, unpriced-diff cap rejections, decide's

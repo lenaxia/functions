@@ -16,7 +16,7 @@ from trading_common import secrets as ts  # noqa: E402
 @pytest.fixture()
 def fake_mount(tmp_path, monkeypatch):
     base = tmp_path / "fission"
-    d = base / "trading-execute"
+    d = base / "trading"
     d.mkdir(parents=True)
     monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
     return d
@@ -49,3 +49,28 @@ class TestExecuteKeys:
     def test_missing_everything_still_fails_closed_to_shadow(self, fake_mount, monkeypatch):
         monkeypatch.delenv("SHADOW", raising=False)
         assert ts.flag("SHADOW") is True
+
+    def test_two_mounts_resolves_shared_trading_mount(self, tmp_path, monkeypatch):
+        # shared-secret deploy: exact `trading` dir must win over any
+        # unrelated mount
+        base = tmp_path / "fission"
+        (base / "unrelated").mkdir(parents=True)
+        d = base / "trading"
+        d.mkdir()
+        (d / "ALPACA_PAPER_API_KEY").write_text("from-shared-mount")
+        monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
+        monkeypatch.delenv("ALPACA_PAPER_API_KEY", raising=False)
+        assert ts.secret("ALPACA_PAPER_API_KEY") == "from-shared-mount"
+
+    def test_multiple_dirs_falls_back_to_unique_trading_prefix(self, tmp_path, monkeypatch):
+        # legacy per-function mount (trading-<fn>, no exact `trading`)
+        # resolves via the prefix fallback branch
+        base = tmp_path / "fission"
+        (base / "other-secret").mkdir(parents=True)
+        d = base / "trading-execute"
+        d.mkdir()
+        (d / "ALPACA_PAPER_API_KEY").write_text("picked")
+        monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
+        monkeypatch.delenv("ALPACA_PAPER_API_KEY", raising=False)
+        assert ts.secret("ALPACA_PAPER_API_KEY") == "picked"
+        assert "trading-execute" in ts.mount_desc()
