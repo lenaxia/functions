@@ -1,0 +1,5 @@
+environment: python3-trading
+language: python
+runtime: python312
+version: "0.1.0"
+source: https://github.com/lenaxia/functions

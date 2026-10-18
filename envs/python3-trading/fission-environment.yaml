@@ -1,0 +1,24 @@
+---
+# Python 3.12 environment for the trading functions (debate/decide/execute/
+# score/digest/chains/trading-seed).
+#
+# Uses the stock fission python env images (same as python3-manga-updater,
+# without the NFS scratch volume). Runtime deps come from each function's
+# requirements.txt (psycopg[binary]); everything else is stdlib, LLM calls
+# go over plain HTTP.
+#
+# NOTE: `fission/python-env:latest` currently resolves to a Python 3.12
+# build. If the upstream tag drifts, pin an explicit 3.12 tag here (the
+# functions declare `runtime: python312` in their config.yaml).
+apiVersion: fission.io/v1
+kind: Environment
+metadata:
+  name: python3-trading
+  namespace: fission
+spec:
+  version: 3
+  runtime:
+    image: fission/python-env:latest
+  builder:
+    image: fission/python-builder:latest
+    command: build
