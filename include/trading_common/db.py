@@ -34,7 +34,7 @@ def database_url() -> str:
         # fail fast with the missing key + where we looked, instead of an
         # opaque psycopg auth failure three retries later
         raise RuntimeError(
-            "PGPASSWORD not found (secret mount: %s; environment: unset) — "
+            "PGPASSWORD not found in secret mount (%s) or environment — "
             "provide PGPASSWORD or DATABASE_URL" % mount_desc())
     # percent-encode credentials: the deploy guide's `openssl rand -base64 24`
     # alphabet routinely contains +, /, = (and any password may hold @ : / or

@@ -60,3 +60,27 @@ def test_template_matrix_lists_every_function():
     for fn in sorted(EXPECTED_FUNCTIONS):
         assert re.search(r"\b%s\b" % re.escape(fn), body), \
             f"template key matrix is missing {fn}"
+
+
+_PACKAGES = _REPO / "deploy" / "trading" / "fission" / "packages.yaml"
+
+
+def test_package_urls_pair_with_config_versions():
+    """Package CR URLs must pin the config.yaml version of their function.
+
+    A config bump without a URL bump silently stages stale zips for the
+    cluster (0.1.0 carried the broken hardcoded-mount secrets.py).
+    """
+    docs = [d for d in yaml.safe_load_all(_PACKAGES.read_text()) if d]
+    pkgs = [d for d in docs if d.get("kind") == "Package"]
+    assert len(pkgs) == len(EXPECTED_FUNCTIONS)
+    for p in pkgs:
+        fn = p["metadata"]["name"]
+        url = p["spec"]["deployment"]["url"]
+        m = re.search(r"/download/%s-(v?[\d.]+)/%s-(v?[\d.]+)\.zip$"
+                      % (re.escape(fn), re.escape(fn)), url)
+        assert m and m.group(1) == m.group(2), \
+            f"{fn}: malformed pin URL {url}"
+        cfg = yaml.safe_load((_REPO / "functions" / fn / "config.yaml").read_text())
+        assert m.group(1) == cfg["version"], \
+            f"{fn}: package URL pins {m.group(1)} but config.yaml says {cfg['version']}"
