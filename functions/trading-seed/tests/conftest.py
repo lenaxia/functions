@@ -4,7 +4,7 @@ from pathlib import Path
 # make include/ + function code importable when run from the function dir
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "include"))
-sys.path.insert(0, str(ROOT / "functions" / "debate"))
+sys.path.insert(0, str(ROOT / "functions" / "trading-seed"))
 
 
 class FakeDB:

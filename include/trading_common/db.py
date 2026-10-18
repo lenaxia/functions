@@ -21,6 +21,9 @@ _LOG = logging.getLogger(__name__)
 SCHEMA_SQL = (Path(__file__).resolve().parent / "schema.sql").read_text()
 
 
+import urllib.parse as _up
+
+
 def database_url() -> str:
     url = secret("DATABASE_URL")
     if url:
@@ -30,7 +33,7 @@ def database_url() -> str:
     db = secret("PGDATABASE", "trading")
     user = secret("PGUSER", "trading")
     pwd = secret("PGPASSWORD")
-    return "postgresql://%s:%s@%s:%s/%s" % (user, pwd, host, port, db)
+    return "postgresql://%s:%s@%s:%s/%s" % (_up.quote(user, safe=""), _up.quote(pwd, safe=""), host, port, db)
 
 
 class TradingDB:

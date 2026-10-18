@@ -92,7 +92,9 @@ def main() -> dict:
             "gate_log": gate_log,
             "trades_today_before": trades_today,
             "prices": {e["symbol"]: prices.get(e["symbol"]) for e in exits_ok}
-            | {e["symbol"]: prices.get(e["symbol"]) for e in gated_entries},
+            | {e["symbol"]: prices.get(e["symbol"]) for e in gated_entries}
+            | {sym: prices.get(sym) for sym, h in (book.get("positions") or {}).items()
+               if h.get("qty", 0) > 0 and prices.get(sym)},
         }
         db.record_decision(today, "decide", payload, status="ok")
         db.mark_step(today, "decide")

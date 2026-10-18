@@ -74,6 +74,10 @@ def account_state(api: Alpaca) -> dict:
         return {"ok": False, "error": acct["_error"]}
     clock = api.api("GET", "/clock")
     positions = api.api("GET", "/positions")
+    if isinstance(positions, dict) and "_error" in positions:
+        return {"ok": False, "error": "positions read failed: %s" % positions["_error"]}
+    if isinstance(clock, dict) and "_error" in clock:
+        return {"ok": False, "error": "clock read failed: %s" % clock["_error"]}
     held = ({p["symbol"]: float(p["qty"]) for p in positions}
             if isinstance(positions, list) else {})
     held_value = (sum(float(p["market_value"]) for p in positions)
@@ -119,6 +123,10 @@ def evaluate_caps(diffs_list: list[dict], prices: dict[str, float],
     for d in sorted(diffs_list, key=lambda x: x["action"] != "sell"):
         sym, qty = d["symbol"], int(d["qty"])
         px = prices.get(sym) or 0.0
+        if d["action"] == "buy" and (not px or px <= 0):
+            rejections.append({"symbol": sym, "side": "buy", "qty": qty,
+                               "reason": "no price available - cap bypass guard"})
+            continue
         notional = qty * px
         if d["action"] == "buy":
             if notional > caps["max_notional_per_order"]:
