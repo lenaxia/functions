@@ -1,10 +1,12 @@
 import sys
 from pathlib import Path
 
-# make include/ + function code importable when run from the function dir
+# make include/ + THIS function's own code importable when run from the
+# function dir (each suite must import its own main.py, never a sibling's)
 ROOT = Path(__file__).resolve().parents[3]
+_FUNCTION_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "include"))
-sys.path.insert(0, str(ROOT / "functions" / "execute"))
+sys.path.insert(0, str(_FUNCTION_DIR))
 
 
 class FakeDB:

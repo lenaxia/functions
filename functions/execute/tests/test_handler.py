@@ -85,6 +85,9 @@ class TestExecuteHandler:
 
     def test_shadow_logs_without_placing(self, monkeypatch):
         import main as execute
+        # regression guard: this suite must import functions/execute/main.py,
+        # never a sibling function's module (conftest sys.path copy-paste bug)
+        assert execute.__file__ == str(ROOT / "functions" / "execute" / "main.py")
         from trading_common import alpaca as ap
         from conftest import FakeDB
 
