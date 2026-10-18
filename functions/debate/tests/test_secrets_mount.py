@@ -54,15 +54,18 @@ class TestDiscovery:
         monkeypatch.setenv("PGPASSWORD", "env-only")
         assert ts.secret("PGPASSWORD") == "env-only"
 
-    def test_multiple_dirs_prefers_unique_trading_prefix(self, tmp_path, monkeypatch):
+    def test_multiple_dirs_falls_back_to_unique_trading_prefix(self, tmp_path, monkeypatch):
+        # legacy per-function mounts (trading-<fn>, no exact `trading`
+        # present) still resolve via the prefix fallback branch
         base = tmp_path / "fission"
         (base / "other-secret").mkdir(parents=True)
-        d = base / "trading"
+        d = base / "trading-debate"
         d.mkdir()
         (d / "PGPASSWORD").write_text("picked")
         monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
         monkeypatch.delenv("PGPASSWORD", raising=False)
         assert ts.secret("PGPASSWORD") == "picked"
+        assert "trading-debate" in ts.mount_desc()
 
     def test_two_mounts_resolves_shared_trading_mount(self, tmp_path, monkeypatch):
         # shared-secret deploy: exact `trading` dir must win over any

@@ -169,7 +169,7 @@ Upserts only — re-running never double-appends.
 ## Testing
 
 Every function ships offline pytest suites (`tests/`, run per-function by
-CI — `task local-build-<function>` locally). 73 tests cover the verbatim
+CI — `task local-build-<function>` locally). 75 tests cover the verbatim
 gate/rule/cap math, chain ordering/abort/skip semantics, shadow-mode
 no-order behavior, seed idempotency, the digest watchdog, the secret
 mount-path contract (shared `trading` mount discovery, env fallback,

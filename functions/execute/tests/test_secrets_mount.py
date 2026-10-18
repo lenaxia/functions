@@ -61,3 +61,16 @@ class TestExecuteKeys:
         monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
         monkeypatch.delenv("ALPACA_PAPER_API_KEY", raising=False)
         assert ts.secret("ALPACA_PAPER_API_KEY") == "from-shared-mount"
+
+    def test_multiple_dirs_falls_back_to_unique_trading_prefix(self, tmp_path, monkeypatch):
+        # legacy per-function mount (trading-<fn>, no exact `trading`)
+        # resolves via the prefix fallback branch
+        base = tmp_path / "fission"
+        (base / "other-secret").mkdir(parents=True)
+        d = base / "trading-execute"
+        d.mkdir()
+        (d / "ALPACA_PAPER_API_KEY").write_text("picked")
+        monkeypatch.setattr(ts, "SECRET_BASE_DIR", base)
+        monkeypatch.delenv("ALPACA_PAPER_API_KEY", raising=False)
+        assert ts.secret("ALPACA_PAPER_API_KEY") == "picked"
+        assert "trading-execute" in ts.mount_desc()
