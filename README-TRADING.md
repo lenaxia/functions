@@ -97,16 +97,19 @@ Upserts only — re-running never double-appends.
    version per each function's `config.yaml` (CI builds + tests each
    function; the Package URLs pin those versions).
 2. **talos-ops-prod**: copy `deploy/trading/*` per its README (CNPG
-   cluster, sops secrets, db-init Job, Fission Package/Function/trigger
-   CRs) + the environment CR from `envs/python3-trading/`.
-3. Run the db-init Job, then `POST /trading-seed` once via the router.
+   cluster with initdb bootstrap, two sops secrets, Fission
+   Package/Function/trigger CRs) + the environment CR from
+   `envs/python3-trading/`.
+3. `POST /trading-seed` once via the router (role+db are created by the
+   CNPG initdb bootstrap from the `tradingpg-app` secret — no db-init
+   Job).
 4. Watch the next 13:45 / 22:30 UTC runs:
    `fission function logs --name morning-chain --follow`, and
    `SELECT * FROM step_completions ORDER BY ts DESC LIMIT 10;` on trading.
 
 ## Shadow mode (comparison week)
 
-`SHADOW=1` in each secret (deployment default):
+`SHADOW=1` in the shared `trading` secret (deployment default):
 
 - All functions write the DB (decisions, fills-as-shadow, equity, events,
   step_completions) and the git journal (`ai-trading` repo,

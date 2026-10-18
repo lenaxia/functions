@@ -1,9 +1,10 @@
 """Manifest <-> template cross-validation (review: manifest drift regression).
 
 Pins the contract between deploy/trading/fission/functions.yaml (Function
-CR secret refs) and secret-trading.yaml.template (provisions
-trading-FUNCTIONNAME). Would have caught both the original bare-name
-refs and any future drift (e.g. trading-seed vs trading-trading-seed).
+CR secret refs), packages.yaml (URL pins), and secret-trading.yaml.template
+(all-functions shared `trading` secret). Would have caught the original
+bare-name refs, the trading-seed naming drift, and any future drift
+(e.g. config bumps without URL bumps).
 
 Runs in CI (function-builder checks out the full repo and pytest runs
 from the function dir). Skipped under `task local-build-*` temp work
@@ -39,27 +40,37 @@ def test_exactly_the_eight_trading_functions():
     assert names == EXPECTED_FUNCTIONS
 
 
-def test_every_function_mounts_exactly_its_trading_secret():
+def test_every_function_mounts_the_shared_trading_secret():
     for f in _functions():
         fn = f["metadata"]["name"]
         refs = f["spec"].get("secrets", [])
         assert len(refs) == 1, f"{fn}: expected exactly one secret ref, got {refs}"
-        assert refs[0]["name"] == "trading-" + fn, \
-            f"{fn}: secret ref {refs[0]['name']!r} != 'trading-{fn}'"
+        assert refs[0]["name"] == "trading", \
+            f"{fn}: secret ref {refs[0]['name']!r} != 'trading'"
         assert refs[0]["namespace"] == "fission"
 
 
-def test_template_provisions_trading_functionname():
+def test_template_provisions_the_shared_secret():
     body = _TEMPLATE.read_text()
-    assert re.search(r"name:\s*trading-FUNCTIONNAME\b", body), \
-        "template no longer provisions trading-FUNCTIONNAME secrets"
+    assert re.search(r"name:\s*trading-FUNCTIONNAME\b", body) is None, \
+        "template still provisions per-function trading-FUNCTIONNAME secrets"
+    assert re.search(r"^\s{4}name:\s*trading\s*$", body, re.M), \
+        "template no longer provisions the shared `trading` secret"
 
 
-def test_template_matrix_lists_every_function():
+_REQUIRED_TEMPLATE_KEYS = {"PGHOST", "PGPORT", "PGDATABASE", "PGUSER",
+                           "PGPASSWORD", "LLM_API_BASE", "LLM_API_KEY",
+                           "LLM_MODEL", "ALPACA_PAPER_API_KEY",
+                           "ALPACA_PAPER_API_SECRET",
+                           "ALPACA_PAPER_API_ENDPOINT", "PILOT_NOTIONAL",
+                           "GITHUB_TOKEN", "SHADOW"}
+
+
+def test_template_shared_key_set_is_complete():
     body = _TEMPLATE.read_text()
-    for fn in sorted(EXPECTED_FUNCTIONS):
-        assert re.search(r"\b%s\b" % re.escape(fn), body), \
-            f"template key matrix is missing {fn}"
+    for key in sorted(_REQUIRED_TEMPLATE_KEYS):
+        assert re.search(r"^\s{4}%s:" % key, body, re.M), \
+            f"template missing key {key} in the shared secret"
 
 
 _PACKAGES = _REPO / "deploy" / "trading" / "fission" / "packages.yaml"
