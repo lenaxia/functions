@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   review:
-    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@5f900a244307742c21918da334993a3f044bbd6f # v0.2.10
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.19 # v0.2.10
     secrets: inherit
     with:
       version: v0.2.10
