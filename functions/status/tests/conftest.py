@@ -31,7 +31,7 @@ class FakeDB:
 
     def get_decision(self, run_date, step):
         row = self.decisions.get((run_date, step))
-        return row["payload"] if row else None
+        return {"payload": row["payload"], "status": row["status"]} if row else None
 
     def add_event(self, type_, detail):
         self._event_id += 1
