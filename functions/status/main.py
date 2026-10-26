@@ -79,7 +79,7 @@ def main() -> dict:
             "system": {"halt": halt_state(db),
                        "last_chain": last_event(db, "chain"),
                        "last_reconcile": last_event(db, "reconcile")},
-            "book": {"cash": (book_row or {}).get("cash") if book_row else None,
+            "book": {"cash": book_row["payload"].get("cash") if book_row else None,
                      "positions": len(held),
                      "symbols": sorted(held),
                      "account": acct},
