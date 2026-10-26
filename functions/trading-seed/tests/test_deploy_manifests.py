@@ -27,7 +27,8 @@ pytestmark = pytest.mark.skipif(
     not _MANIFEST.exists(), reason="deploy/ tree not present (local-build work dir)")
 
 EXPECTED_FUNCTIONS = {"debate", "decide", "execute", "score", "digest",
-                      "morning-chain", "afternoon-chain", "trading-seed"}
+                      "morning-chain", "afternoon-chain", "trading-seed",
+                      "reconcile", "status"}
 
 
 def _functions():
@@ -35,7 +36,7 @@ def _functions():
     return [d for d in docs if d.get("kind") == "Function"]
 
 
-def test_exactly_the_eight_trading_functions():
+def test_exactly_the_ten_trading_functions():
     names = {f["metadata"]["name"] for f in _functions()}
     assert names == EXPECTED_FUNCTIONS
 
