@@ -130,8 +130,8 @@ def main() -> dict:
         db.mark_step(today, "debate")
         db.add_event("debate", {"date": today,
                                 "verdicts": {v["symbol"]: v["verdict"] for v in out["verdicts"]}})
-        if flag("SHADOW", "1"):
-            gitstate.journal(today, "debate", out)
+        # journal unconditionally — shadow/ is the audit mirror for both modes
+        gitstate.journal(today, "debate", out)
         return out
     finally:
         db.close()

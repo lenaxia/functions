@@ -150,8 +150,9 @@ def main() -> dict:
                                  "orders": len(result.get("orders") or []),
                                  "rejections": len(result.get("rejections") or []),
                                  "note": result.get("note", "")})
-        if shadow:
-            gitstate.journal(today, "execute", result)
+        # journal unconditionally — shadow/ is the audit mirror for BOTH
+        # modes now (cutover made it live-only, which went dark 2026-10-26)
+        gitstate.journal(today, "execute", result)
         return result
     finally:
         db.close()
@@ -175,44 +176,70 @@ def place_orders(db: TradingDB, api: ap.Alpaca, orders: list[dict], result: dict
                        "err": resp.get("_error")})
     result["orders"] = placed
 
-    # fill prices where already available (market orders usually fill fast)
+    # Poll orders to terminal state before recording: a single-shot price
+    # check raced slow fills on 2026-10-27 and dropped DHR from the book.
+    # Shared budget so N orders always fit the function timeout.
+    deadline = time.monotonic() + FILL_POLL_BUDGET_SECONDS
     book = {"cash": _book_cash(db), "positions": db.positions()}
     for o in placed:
         if not o.get("ok"):
             continue
-        price = _filled_price(api, o.get("id"))
+        price = _filled_price(api, o.get("id"), deadline)
         assumed = o.get("assumed_price")
-        if o["side"] == "buy" and price:
-            db.record_fill(o["symbol"], "buy", o["qty"], price, assumed,
-                           note="live bracket buy")
+        if price:
+            db.record_fill(o["symbol"], o["side"], o["qty"], price, assumed,
+                           note="live bracket buy" if o["side"] == "buy" else "live sell")
+            side = "buy" if o["side"] == "buy" else "sell"
             try:
-                broker.execute(book, "buy", o["symbol"], int(o["qty"]), price,
+                broker.execute(book, side, o["symbol"], int(o["qty"]), price,
                                "fission execute")
             except ValueError as e:
-                logger.warning("book buy rejected: %s", e)
-        elif o["side"] == "sell":
-            db.record_fill(o["symbol"], "sell", o["qty"], price, assumed,
-                           note="live sell")
-            try:
-                broker.execute(book, "sell", o["symbol"], int(o["qty"]),
-                               price or assumed or 0.0, "fission execute")
-            except ValueError as e:
-                logger.warning("book sell rejected: %s", e)
-    db.set_positions(book.get("positions") or {})
-    db.record_decision("1970-01-01", "book_state",
-                       {"cash": book.get("cash", 0.0)}, status="ok")
+                logger.warning("book %s rejected: %s", side, e)
+        else:
+            # still not terminal when the budget ran out: never fake a fill.
+            # The broker-truth sync below picks the position up; the fill row
+            # lands on a later cycle.
+            o["fill_pending"] = True
+            logger.warning("%s %s: no terminal fill within budget", o["side"], o["symbol"])
+
+    # Broker truth is authoritative in live mode: sync positions (qty +
+    # avg entry) and cash straight off the account so the book can never
+    # drift from a missed/partial local update.
+    acct_pos = api.api("GET", "/positions")
+    if isinstance(acct_pos, list):
+        db.set_positions({p["symbol"]: {"qty": float(p["qty"] or 0),
+                                        "entry": float(p.get("avg_entry_price") or 0.0)}
+                          for p in acct_pos if float(p.get("qty") or 0) > 0})
+    else:
+        logger.warning("positions sync failed (%s); keeping local book", acct_pos)
+        db.set_positions(book.get("positions") or {})
+    acct = api.api("GET", "/account")
+    cash = book.get("cash", 0.0)
+    if isinstance(acct, dict) and acct.get("cash") is not None:
+        cash = float(acct["cash"])
+    else:
+        logger.warning("account sync failed (%s); keeping local cash", acct)
+    db.record_decision("1970-01-01", "book_state", {"cash": cash}, status="ok")
 
 
-def _filled_price(api: ap.Alpaca, order_id: str | None) -> float | None:
+def _filled_price(api: ap.Alpaca, order_id: str | None,
+                  deadline: float | None = None,
+                  interval: float = 3.0) -> float | None:
+    """Poll the order until it reaches a terminal state (or the deadline)
+    and return the average fill price; None when unknown/unfilled."""
     if not order_id:
         return None
-    o = api.api("GET", "/orders/" + order_id)
-    try:
-        if o.get("status") in ("filled", "partially_filled") and o.get("filled_avg_price"):
-            return float(o["filled_avg_price"])
-    except Exception:
-        pass
-    return None
+    while True:
+        o = api.api("GET", "/orders/" + order_id)
+        if isinstance(o, dict):
+            status = o.get("status")
+            if status in ("filled", "partially_filled") and o.get("filled_avg_price"):
+                return float(o["filled_avg_price"])
+            if status in ("canceled", "expired", "rejected", "done_for_day"):
+                return None
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
 
 
 def _book_cash(db: TradingDB) -> float:
