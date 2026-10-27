@@ -106,8 +106,8 @@ def main() -> dict:
         db.record_decision(today, "digest", payload, status="ok")
         db.mark_step(today, "digest")
         db.add_event("digest", {"date": today, "missing_steps": missing, "text": text})
-        if flag("SHADOW", "1"):
-            gitstate.journal(today, "digest", {"missing_steps": missing, "text": text})
+        # journal unconditionally — shadow/ is the audit mirror for both modes
+        gitstate.journal(today, "digest", {"missing_steps": missing, "text": text})
         logger.info("digest:\n%s", text)
         return payload
     finally:

@@ -107,8 +107,8 @@ def main() -> dict:
                                 "exits": [e["symbol"] for e in exits_ok],
                                 "entries": [e["symbol"] for e in gated_entries],
                                 "debate_fallback": debate_fallback})
-        if shadow:
-            gitstate.journal(today, "decide", payload)
+        # journal unconditionally — shadow/ is the audit mirror for both modes
+        gitstate.journal(today, "decide", payload)
         return payload
     finally:
         db.close()

@@ -96,8 +96,8 @@ def main() -> dict:
                                             for k, v in comp.get("variants", {}).items()},
                                "spy": comp.get("benchmark", {}).get("SPY", {}).get("return_to_date"),
                                "control": ctrl.get("return_pct")})
-        if shadow:
-            gitstate.journal(today, "score", payload)
+        # journal unconditionally — shadow/ is the audit mirror for both modes
+        gitstate.journal(today, "score", payload)
         return payload
     finally:
         db.close()
