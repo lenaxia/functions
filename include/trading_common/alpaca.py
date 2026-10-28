@@ -110,7 +110,13 @@ def bracket_body(body: dict, sym: str, ref_price: float | None) -> dict:
     (entry/last) price; bracket dropped when no price is known."""
     if body.get("side") != "buy" or not ref_price:
         return body
+    # GTC: with day brackets the stop/TP legs were canceled/expired at the
+    # close (2026-10-28), leaving positions unprotected overnight. A GTC
+    # market entry fills immediately anyway; the exit legs persist until
+    # hit. place_orders cancels a symbol's open legs before decide-driven
+    # sells so a lingering stop can never double-sell into a short.
     body.update({"order_class": "bracket",
+                 "time_in_force": "gtc",
                  "stop_loss": {"stop_price": round(ref_price * 0.95, 2)},
                  "take_profit": {"limit_price": round(ref_price * 1.15, 2)}})
     return body

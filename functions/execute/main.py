@@ -164,6 +164,10 @@ def place_orders(db: TradingDB, api: ap.Alpaca, orders: list[dict], result: dict
     broker.py's verbatim fill math."""
     placed = []
     for o in orders:
+        if o["side"] == "sell":
+            # decide-driven exits must not race a symbol's open GTC bracket
+            # legs (a surviving stop after our own sell = double-sell/short)
+            cancel_open_legs(api, o["symbol"])
         body = {"symbol": o["symbol"], "qty": int(o["qty"]), "side": o["side"],
                 "type": "market", "time_in_force": "day"}
         ref = None
@@ -220,6 +224,23 @@ def place_orders(db: TradingDB, api: ap.Alpaca, orders: list[dict], result: dict
     else:
         logger.warning("account sync failed (%s); keeping local cash", acct)
     db.record_decision("1970-01-01", "book_state", {"cash": cash}, status="ok")
+
+
+def cancel_open_legs(api: ap.Alpaca, symbol: str) -> int:
+    """Cancel this symbol's open orders (bracket stop/TP legs). Returns the
+    count canceled; failures are logged, never raised (the sell must go on)."""
+    try:
+        open_o = api.api("GET", "/orders?status=open&symbols=" + symbol)
+        n = 0
+        for leg in open_o if isinstance(open_o, list) else []:
+            api.api("DELETE", "/orders/" + leg["id"])
+            n += 1
+        if n:
+            logger.info("canceled %d open leg(s) for %s", n, symbol)
+        return n
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cancel_open_legs(%s) failed: %s", symbol, e)
+        return 0
 
 
 def _filled_price(api: ap.Alpaca, order_id: str | None,
