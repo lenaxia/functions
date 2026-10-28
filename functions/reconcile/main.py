@@ -65,12 +65,18 @@ def diff_book(db_pos: dict[str, float], db_cash: float, acct: dict) -> dict:
     }
 
 
+# when a step becomes "due" (UTC hour) — before that, absence is not a gap
+DUE_HOUR = {"debate": 14, "decide": 14, "execute": 14, "score": 22}
+
+
 def schedule_gap(db: TradingDB, today: str) -> list[str]:
     now = datetime.now(timezone.utc)
     if now.weekday() >= 5:  # Sat/Sun: no chains scheduled
         return []
-    missing = [s for s in REQUIRED_MORNING if not db.step_done(today, s)]
-    missing += [s for s in REQUIRED_AFTERNOON if not db.step_done(today, s)]
+    missing = []
+    for s in REQUIRED_MORNING + REQUIRED_AFTERNOON:
+        if now.hour >= DUE_HOUR[s] and not db.step_done(today, s):
+            missing.append(s)
     return missing
 
 

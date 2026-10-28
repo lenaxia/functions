@@ -94,3 +94,24 @@ class TestReconcile:
         assert set(result["checks"]["schedule"]["missing"]) == {
             "debate", "decide", "execute", "score"}
         assert result["all_good"] is False
+
+
+class TestScheduleDueHours:
+    def _gap(self, monkeypatch, hour):
+        import datetime as dt
+        import main as rec
+        from conftest import FakeDB
+        db = FakeDB()
+        monkeypatch.setattr(rec, "TradingDB", lambda: db)
+        monkeypatch.setattr(rec, "datetime", type("D", (dt.datetime,), {
+            "now": classmethod(lambda cls, tz=None: dt.datetime(
+                2026, 10, 28, hour, 0, tzinfo=tz))}))  # a Wednesday
+        return rec.schedule_gap(db, rec.utc_today())
+
+    def test_morning_steps_due_after_14z(self, monkeypatch):
+        assert self._gap(monkeypatch, 13) == []          # not due yet
+        assert set(self._gap(monkeypatch, 15)) == {"debate", "decide", "execute"}
+
+    def test_score_due_after_22z(self, monkeypatch):
+        assert self._gap(monkeypatch, 21) == ["debate", "decide", "execute"]
+        assert set(self._gap(monkeypatch, 23)) == {"debate", "decide", "execute", "score"}
