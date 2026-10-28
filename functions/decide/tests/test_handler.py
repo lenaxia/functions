@@ -256,3 +256,77 @@ class TestDecideHandler:
         assert db.positions()["NVDA"]["qty"] == 5
         row = db.get_decision("1970-01-01", "book_state")
         assert row["payload"]["cash"] == 25000.0
+
+
+class TestBrokerBookSync:
+    def test_live_mode_syncs_book_from_broker(self, monkeypatch):
+        import main as decide
+        from conftest import FakeDB
+
+        db = FakeDB()
+        monkeypatch.setattr(decide, "TradingDB", lambda: db)
+        # live mode: SHADOW=0
+        monkeypatch.setattr(decide, "flag", lambda n, d="1": False)
+        monkeypatch.setattr(decide.gitstate, "read_json", lambda p: None)
+
+        class FakeAPI:
+            def api(self, method, path, body=None):
+                if path == "/account":
+                    return {"status": "ACTIVE", "cash": "80112.0"}
+                if path == "/clock":
+                    return {"is_open": True}
+                if path == "/positions":
+                    return [{"symbol": "AAPL", "qty": "10", "avg_entry_price": "342.0"}]
+                return {}
+
+        monkeypatch.setattr(decide.ap, "Alpaca", lambda: FakeAPI())
+        monkeypatch.setattr(
+            decide.ap, "account_state",
+            lambda api: {"ok": True, "open": True, "equity": 100000.0,
+                         "cash": 80112.0, "held": {"AAPL": 10.0},
+                         "held_value": 3420.0})
+        monkeypatch.setattr(decide.marketdata, "snapshot", lambda: {"stocks": []})
+        monkeypatch.setattr(
+            decide.trade_rules, "build_decision",
+            lambda book, snap, now=None: {"market_open": True,
+                                          "account": {"cash": book["cash"]},
+                                          "exits": [], "entries": []})
+        monkeypatch.setattr(decide, "trading_gates",
+                            lambda dec, debate, trades: ([], [], []))
+        monkeypatch.setattr(decide.gitstate, "journal", lambda *a, **k: True)
+
+        out = decide.main()
+        assert out["ok"]
+        # book now mirrors broker truth (not the stale DB/seed book)
+        assert db.positions_state == {"AAPL": {"qty": 10.0, "entry": 342.0}}
+        assert db.get_decision("1970-01-01", "book_state")["payload"]["cash"] == 80112.0
+
+    def test_live_sync_failure_falls_back_to_db_book(self, monkeypatch):
+        import main as decide
+        from conftest import FakeDB
+
+        db = FakeDB()
+        db.record_decision("1970-01-01", "book_state", {"cash": 5000.0})
+        db.set_positions({"MSFT": {"qty": 1, "entry": 500.0}})
+        monkeypatch.setattr(decide, "TradingDB", lambda: db)
+        monkeypatch.setattr(decide, "flag", lambda n, d="1": False)
+        monkeypatch.setattr(decide.gitstate, "read_json", lambda p: None)
+
+        class BoomAPI:
+            def api(self, *a, **k):
+                raise RuntimeError("broker down")
+
+        monkeypatch.setattr(decide.ap, "Alpaca", lambda: BoomAPI())
+        monkeypatch.setattr(decide.marketdata, "snapshot", lambda: {"stocks": []})
+        monkeypatch.setattr(
+            decide.trade_rules, "build_decision",
+            lambda book, snap, now=None: {"market_open": True,
+                                          "account": {"cash": book["cash"]},
+                                          "exits": [], "entries": []})
+        monkeypatch.setattr(decide, "trading_gates",
+                            lambda dec, debate, trades: ([], [], []))
+        monkeypatch.setattr(decide.gitstate, "journal", lambda *a, **k: True)
+
+        out = decide.main()
+        assert out["ok"]  # fail-open: DB book kept, decision still made
+        assert db.positions_state == {"MSFT": {"qty": 1, "entry": 500.0}}

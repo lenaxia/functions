@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, timezone
 
 from trading_common.db import TradingDB
+from trading_common import alpaca as ap
 from trading_common import gitstate, marketdata, trade_rules
 from trading_common.secrets import flag
 
@@ -35,6 +36,35 @@ def sync_book_from_git(db: TradingDB) -> dict | None:
     meta = {k: book[k] for k in ("cash", "meta") if k in book}
     db.record_decision("1970-01-01", "book_state", meta, status="ok")
     return book
+
+
+def sync_book_from_broker(db: TradingDB) -> dict | None:
+    """Live mode: mirror positions (qty + avg entry) and cash from broker
+    truth BEFORE computing the diff. With persistent GTC brackets a stop
+    can fire overnight; deciding off a stale DB book would exit ghost
+    positions and size entries off stale cash. Fail-open: keep the DB
+    book when the broker is unreachable (reconcile flags the drift)."""
+    try:
+        api = ap.Alpaca()
+        acct = ap.account_state(api)
+        if not acct.get("ok"):
+            logger.warning("broker book sync failed: %s", acct.get("error"))
+            return None
+        pos = api.api("GET", "/positions")
+        if not isinstance(pos, list):
+            logger.warning("broker positions sync failed: %s", pos)
+            return None
+        db.set_positions({p["symbol"]: {"qty": float(p.get("qty") or 0),
+                                        "entry": float(p.get("avg_entry_price") or 0.0)}
+                          for p in pos if float(p.get("qty") or 0) > 0})
+        db.record_decision("1970-01-01", "book_state",
+                           {"cash": float(acct.get("cash") or 0.0)}, status="ok")
+        logger.info("book synced from broker: %d positions, cash %s",
+                    len(pos), acct.get("cash"))
+        return acct
+    except Exception as e:  # noqa: BLE001
+        logger.warning("broker book sync failed: %s", e)
+        return None
 
 
 def load_book(db: TradingDB) -> dict | None:
@@ -58,6 +88,9 @@ def main() -> dict:
         if shadow:
             if sync_book_from_git(db) is None:
                 logger.warning("shadow book sync failed; using DB book state")
+        else:
+            if sync_book_from_broker(db) is None:
+                logger.warning("live book sync failed; using DB book state")
         book = load_book(db)
         if book is None:
             out = {"ok": False, "error": "no book state (run trading-seed first)"}
