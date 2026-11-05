@@ -121,6 +121,12 @@ def main() -> dict:
         if halt.get("halted"):
             result.update({"ok": True, "note": "halted — no orders (market-dictated resume)"})
         elif not pending:
+            # "in sync" can also mean a previous run placed the orders and
+            # died before recording them (chain retry lands here) — sync the
+            # book from broker truth so positions/cash never stay stranded,
+            # even though the missing fill rows are unrecoverable here.
+            if not shadow:
+                _sync_book_from_broker(db, api, result)
             result.update({"ok": True, "note": "in sync"})
         elif not acct["open"]:
             result.update({"ok": True, "note": "market closed — diff queued for next open run"})
@@ -209,21 +215,35 @@ def place_orders(db: TradingDB, api: ap.Alpaca, orders: list[dict], result: dict
     # Broker truth is authoritative in live mode: sync positions (qty +
     # avg entry) and cash straight off the account so the book can never
     # drift from a missed/partial local update.
-    acct_pos = api.api("GET", "/positions")
-    if isinstance(acct_pos, list):
-        db.set_positions({p["symbol"]: {"qty": float(p["qty"] or 0),
-                                        "entry": float(p.get("avg_entry_price") or 0.0)}
-                          for p in acct_pos if float(p.get("qty") or 0) > 0})
-    else:
-        logger.warning("positions sync failed (%s); keeping local book", acct_pos)
-        db.set_positions(book.get("positions") or {})
-    acct = api.api("GET", "/account")
-    cash = book.get("cash", 0.0)
-    if isinstance(acct, dict) and acct.get("cash") is not None:
-        cash = float(acct["cash"])
-    else:
-        logger.warning("account sync failed (%s); keeping local cash", acct)
-    db.record_decision("1970-01-01", "book_state", {"cash": cash}, status="ok")
+    _sync_book_from_broker(db, api, result)
+
+
+def _sync_book_from_broker(db: TradingDB, api: ap.Alpaca, result: dict) -> None:
+    """Rewrite the book (positions qty+entry, cash) from broker truth.
+
+    Fail-open: on any API error the DB book is left untouched and the
+    failure is surfaced in `result` (reconcile still watches drift).
+    """
+    try:
+        acct_pos = api.api("GET", "/positions")
+        if isinstance(acct_pos, list):
+            db.set_positions({p["symbol"]: {"qty": float(p.get("qty") or 0),
+                                            "entry": float(p.get("avg_entry_price") or 0.0)}
+                              for p in acct_pos if float(p.get("qty") or 0) > 0})
+            result["broker_sync"] = "ok"
+        else:
+            result["broker_sync"] = "positions read failed"
+            logger.warning("positions sync failed (%s); keeping local book", acct_pos)
+        acct = api.api("GET", "/account")
+        if isinstance(acct, dict) and acct.get("cash") is not None:
+            db.record_decision("1970-01-01", "book_state",
+                               {"cash": float(acct["cash"])}, status="ok")
+        else:
+            result["broker_sync"] = "cash read failed"
+            logger.warning("cash sync failed (%s); keeping local cash", acct)
+    except Exception as e:  # noqa: BLE001
+        result["broker_sync"] = "failed: %s" % str(e)[:120]
+        logger.warning("broker-truth sync failed: %s", e)
 
 
 def cancel_open_legs(api: ap.Alpaca, symbol: str) -> int:

@@ -79,7 +79,12 @@ def run(now: datetime | None = None, sleeve: dict | None = None, st: dict | None
         if not common:
             return {"ok": False, "error": "no common close dates"}, st
         val_date = max(common)
-        cash_frac = st.get("cash_pct") or 0.0
+        raw = st.get("cash_pct") or 0.0
+        # accept both fraction (0.028) and percent (2.8): the seed sentinel
+        # once carried the percent form, overstating cash 100x (the +276%
+        # control artifact repaired 2026-11-05). Fractions are the canonical
+        # storage form (anchor path below); percent values (>1) are converted.
+        cash_frac = raw / 100.0 if raw > 1.0 else raw
     else:
         weights, cash_frac = sleeve_weights(sleeve)
         st["cash_pct"] = cash_frac
