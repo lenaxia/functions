@@ -44,6 +44,52 @@ def read_json(path: str) -> dict | None:
         return None
 
 
+def append_diary(lines: list) -> bool:
+    """Append lines to state/log.txt in ai-trading — the trade diary the
+    end-of-day digest reads. The GHA daily run used to write it; since the
+    cutover disabled those schedules, this keeps the diary alive.
+
+    Best-effort: returns False (and logs) when no token or the API fails;
+    the DB event log and shadow/ journal remain the durable records.
+    """
+    token = secret("GITHUB_TOKEN")
+    if not token:
+        _LOG.warning("GITHUB_TOKEN not set; diary append skipped")
+        return False
+    if not lines:
+        return False
+    url = "https://api.github.com/repos/%s/contents/state/log.txt" % REPO
+
+    def call(method: str, data: dict | None = None):
+        req = urllib.request.Request(
+            url, data=json.dumps(data).encode() if data else None,
+            method=method, headers=_headers(token))
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode() or "{}")
+
+    try:
+        body = ""
+        try:
+            meta = call("GET")
+            body = base64.b64decode(meta["content"]).decode()
+            if body and not body.endswith("\n"):
+                body += "\n"
+            sha = meta["sha"]
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            sha = None
+        call("PUT", {"message": "[diary] %s" % lines[0][:60],
+                     "content": base64.b64encode(
+                         (body + "\n".join(lines) + "\n").encode()).decode(),
+                     "branch": BRANCH, **({"sha": sha} if sha else {})})
+        return True
+    except Exception as e:  # noqa: BLE001
+        _LOG.warning("diary append failed: %s", e)
+        return False
+
+
 def journal(run_date: str, step: str, payload: dict) -> bool:
     """Write shadow/<run_date>/<step>.json into ai-trading (create or update).
 
