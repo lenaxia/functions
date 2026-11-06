@@ -142,9 +142,27 @@ def main() -> dict:
                                 "debate_fallback": debate_fallback})
         # journal unconditionally — shadow/ is the audit mirror for both modes
         gitstate.journal(today, "decide", payload)
+        # keep the GHA-era trade diary (state/log.txt) alive: the end-of-day
+        # digest reads it, and the cutover disabled its old writer
+        try:
+            gitstate.append_diary(diary_lines(
+                now.strftime("%Y-%m-%dT%H:%M:%SZ"), sorted(prices), gate_log))
+        except Exception as e:  # noqa: BLE001 - never fail the step on the diary
+            logger.warning("diary append raised: %s", e)
         return payload
     finally:
         db.close()
+
+
+def diary_lines(now_iso: str, syms, gate_log) -> list:
+    """Compose state/log.txt lines in the GHA daily-run format:
+    <utc-iso> DAILY data_snapshot SYM,... then one line per gate_log tag
+    (TRADED buy/sell, SKIP_BUY, SKIP_SELL, DD_VETO)."""
+    out = ["%s DAILY data_snapshot %s" % (now_iso, ",".join(syms))]
+    for g in gate_log or []:
+        if g.get("tag") and g.get("line"):
+            out.append("%s %s %s" % (now_iso, g["tag"], g["line"]))
+    return out
 
 
 def trading_gates(decision, debate, trades_today):
