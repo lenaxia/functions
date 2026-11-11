@@ -22,6 +22,32 @@ _SHARED_NAME = "trading"
 _SECRET_PREFIX = "trading-"
 
 
+_MOUNT_SETTLED = False
+
+
+def _wait_mount_settled(mount: Path, max_wait: float = 30.0,
+                        quiet: float = 2.0) -> None:
+    """The fission fetcher streams secret files into the mount while the
+    function is already serving (observed 2026-11-11: decide-v228's first
+    call read ALPACA_* (a..e) but not STRATEGY (s..) yet -> the strategy
+    silently resolved to its default). Wait once per pod until the file
+    listing stops changing, so no caller ever sees a half-copied mount."""
+    global _MOUNT_SETTLED
+    if _MOUNT_SETTLED:
+        return
+    _MOUNT_SETTLED = True
+    import time as _time
+
+    deadline = _time.monotonic() + max_wait
+    prev = frozenset(p.name for p in mount.iterdir())
+    while _time.monotonic() < deadline:
+        _time.sleep(quiet)
+        cur = frozenset(p.name for p in mount.iterdir())
+        if cur == prev:
+            return
+        prev = cur
+
+
 def _discover_mount() -> Path | None:
     """The mounted secret dir for this function, if any.
 
@@ -34,6 +60,7 @@ def _discover_mount() -> Path | None:
         return None
     dirs = sorted(p for p in SECRET_BASE_DIR.iterdir() if p.is_dir())
     if len(dirs) == 1:
+        _wait_mount_settled(dirs[0])
         return dirs[0]
     if len(dirs) > 1:
         exact = [p for p in dirs if p.name == _SHARED_NAME]
