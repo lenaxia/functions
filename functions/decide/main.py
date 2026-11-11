@@ -130,6 +130,7 @@ def main() -> dict:
             "ok": True,
             "date": today,
             "now_utc": now.isoformat(),
+            "strategy": getattr(strat, "NAME", "unknown"),
             "market_open": decision.get("market_open"),
             "account": decision.get("account"),
             "debate_fallback": debate_fallback,
