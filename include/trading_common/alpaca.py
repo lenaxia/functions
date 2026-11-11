@@ -105,9 +105,11 @@ def diffs(target: dict[str, float], held: dict[str, float],
     return sorted(out, key=lambda x: x["action"] != "sell")
 
 
-def bracket_body(body: dict, sym: str, ref_price: float | None) -> dict:
-    """Paper-mode bracket attachment: -5% stop / +15% TP off the reference
-    (entry/last) price; bracket dropped when no price is known."""
+def bracket_body(body: dict, sym: str, ref_price: float | None,
+                 tp_pct: float = 15.0, stop_pct: float = 5.0) -> dict:
+    """Bracket attachment off the reference (entry/last) price: -stop_pct%
+    stop / +tp_pct% TP (params come from the book's strategy). Bracket
+    dropped when no price is known."""
     if body.get("side") != "buy" or not ref_price:
         return body
     # GTC: with day brackets the stop/TP legs were canceled/expired at the
@@ -117,8 +119,8 @@ def bracket_body(body: dict, sym: str, ref_price: float | None) -> dict:
     # sells so a lingering stop can never double-sell into a short.
     body.update({"order_class": "bracket",
                  "time_in_force": "gtc",
-                 "stop_loss": {"stop_price": round(ref_price * 0.95, 2)},
-                 "take_profit": {"limit_price": round(ref_price * 1.15, 2)}})
+                 "stop_loss": {"stop_price": round(ref_price * (1.0 - stop_pct / 100.0), 2)},
+                 "take_profit": {"limit_price": round(ref_price * (1.0 + tp_pct / 100.0), 2)}})
     return body
 
 

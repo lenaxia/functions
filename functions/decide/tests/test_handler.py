@@ -1,4 +1,24 @@
 import sys
+
+class StubStrategy:
+    """Test seam: strategy registry stub (fetch -> ctx, build -> decision)."""
+
+    def __init__(self, decision, ctx=None):
+        self.decision = decision
+        self.ctx = ctx or {"stub": True}
+        self.BRACKET = {"tp_pct": 15.0, "stop_pct": 5.0}
+
+    def fetch(self):
+        return self.ctx
+
+    def build_decision(self, book, ctx, now=None):
+        return self.decision
+
+
+def _patch_strategy(monkeypatch, decide, decision, ctx=None):
+    monkeypatch.setattr(decide, "for_secret",
+                        lambda: StubStrategy(decision, ctx))
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -211,15 +231,13 @@ class TestDecideHandler:
                                        "positions": {"NVDA": {"qty": 5, "entry": 200.0},
                                                      "HELD": {"qty": 2, "entry": 50.0}}}
                             if p == "state/book.json" else None)
-        monkeypatch.setattr(decide.marketdata, "snapshot", lambda: {
-            "stocks": [{"sym": "NVDA", "price": 210.0},
-                       {"sym": "HELD", "price": 51.0},
-                       {"sym": "AMD", "price": 100.0},
-                       {"sym": "SPY", "price": 500.0}]})
-        monkeypatch.setattr(
-            decide.trade_rules, "build_decision",
-            lambda book, snap, now=None: {"market_open": True, "account": {"cash": book["cash"]},
-                                          "exits": [], "entries": []})
+        _patch_strategy(monkeypatch, decide, {
+            "market_open": True, "account": {"cash": 25000.0},
+            "exits": [], "entries": []},
+            ctx={"stocks": [{"sym": "NVDA", "price": 210.0},
+                            {"sym": "HELD", "price": 51.0},
+                            {"sym": "AMD", "price": 100.0},
+                            {"sym": "SPY", "price": 500.0}]})
         monkeypatch.setattr(
             decide, "trading_gates",
             lambda dec, debate, trades: (
@@ -285,12 +303,9 @@ class TestBrokerBookSync:
             lambda api: {"ok": True, "open": True, "equity": 100000.0,
                          "cash": 80112.0, "held": {"AAPL": 10.0},
                          "held_value": 3420.0})
-        monkeypatch.setattr(decide.marketdata, "snapshot", lambda: {"stocks": []})
-        monkeypatch.setattr(
-            decide.trade_rules, "build_decision",
-            lambda book, snap, now=None: {"market_open": True,
-                                          "account": {"cash": book["cash"]},
-                                          "exits": [], "entries": []})
+        _patch_strategy(monkeypatch, decide, {
+            "market_open": True, "account": {"cash": 80112.0},
+            "exits": [], "entries": []})
         monkeypatch.setattr(decide, "trading_gates",
                             lambda dec, debate, trades: ([], [], []))
         monkeypatch.setattr(decide.gitstate, "journal", lambda *a, **k: True)
@@ -317,12 +332,9 @@ class TestBrokerBookSync:
                 raise RuntimeError("broker down")
 
         monkeypatch.setattr(decide.ap, "Alpaca", lambda: BoomAPI())
-        monkeypatch.setattr(decide.marketdata, "snapshot", lambda: {"stocks": []})
-        monkeypatch.setattr(
-            decide.trade_rules, "build_decision",
-            lambda book, snap, now=None: {"market_open": True,
-                                          "account": {"cash": book["cash"]},
-                                          "exits": [], "entries": []})
+        _patch_strategy(monkeypatch, decide, {
+            "market_open": True, "account": {"cash": 80112.0},
+            "exits": [], "entries": []})
         monkeypatch.setattr(decide, "trading_gates",
                             lambda dec, debate, trades: ([], [], []))
         monkeypatch.setattr(decide.gitstate, "journal", lambda *a, **k: True)

@@ -12,7 +12,8 @@ sys.path.insert(0, str(_FUNCTION_DIR))
 class FakeDB:
     """Minimal in-memory TradingDB for offline tests."""
 
-    def __init__(self):
+    def __init__(self, book: str = "pilot"):
+        self.book = book
         self.decisions = {}
         self.steps = set()
         self.events = []

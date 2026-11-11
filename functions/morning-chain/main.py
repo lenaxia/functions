@@ -34,6 +34,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+from strategies import for_secret
 from trading_common.db import TradingDB, utc_today
 from trading_common.notify import alert
 from trading_common.secrets import secret
@@ -42,13 +43,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 CHAIN_NAME = "morning-chain"
-STEPS = [
-    {"step": "debate", "path": "/debate", "timeout": 2400, "optional": True},
-    {"step": "decide", "path": "/decide", "timeout": 480, "optional": False},
-    {"step": "execute", "path": "/execute", "timeout": 300, "optional": False},
-]
-# functionTimeout is 3480s; keep a safety margin for JSON/DB/overhead.
-CHAIN_BUDGET_SECONDS = 3300
+# steps come from the book's strategy (pilot: debate/decide/execute via the
+# shared CRs; v228: decide/execute via the -v228 CRs, no debate step)
+STEPS = None  # resolved in main() — kept as a name for readability
+
+
+def _steps() -> list[dict]:
+    return for_secret().STEPS
+
+
+def _budget(steps: list[dict]) -> int:
+    # chain budget = sum of step timeouts + slack, capped at functionTimeout
+    return min(3300, sum(s["timeout"] for s in steps) + 300)
 MIN_STEP_BUDGET_SECONDS = 120   # don't start a step we can't finish
 MAX_RETRY_PASSES = 2
 RETRY_BACKOFF_SECONDS = 45
@@ -74,11 +80,12 @@ def call_step(path: str, timeout: int) -> dict:
         return {"ok": False, "error": str(e)[:300]}
 
 
-def run_pass(db: TradingDB, today: str, budget_for: "callable") -> tuple[list[dict], str | None]:
-    """One ordered walk over STEPS. Returns (step records, aborted_at)."""
+def run_pass(db: TradingDB, today: str, steps: list[dict],
+             budget_for: "callable") -> tuple[list[dict], str | None]:
+    """One ordered walk over the strategy's STEPS. Returns (records, aborted)."""
     done: list[dict] = []
     aborted: str | None = None
-    for s in STEPS:
+    for s in steps:
         step = s["step"]
         timeout = budget_for(s["timeout"])
         if timeout < MIN_STEP_BUDGET_SECONDS:
@@ -105,18 +112,20 @@ def run_pass(db: TradingDB, today: str, budget_for: "callable") -> tuple[list[di
 
 def main() -> dict:
     today = utc_today()
+    steps = _steps()
+    chain_budget = _budget(steps)
     started = time.monotonic()
     records: list[dict] = []
     aborted: str | None = None
     retry_passes = 0
 
     def budget_for(step_timeout: int) -> int:
-        left = CHAIN_BUDGET_SECONDS - (time.monotonic() - started)
+        left = chain_budget - (time.monotonic() - started)
         return int(min(step_timeout, max(left, 0)))
 
     db = TradingDB()
     try:
-        records, aborted = run_pass(db, today, budget_for)
+        records, aborted = run_pass(db, today, steps, budget_for)
 
         def step_record(step: str) -> dict | None:
             return next((r for r in records if r.get("step") == step), None)
@@ -125,7 +134,7 @@ def main() -> dict:
             # only REQUIRED steps count against ok (debate failure is
             # tolerated by design — decide runs with the fallback flag)
             out = []
-            for s in STEPS:
+            for s in steps:
                 if s["optional"]:
                     continue
                 r = step_record(s["step"])
@@ -134,7 +143,7 @@ def main() -> dict:
             return out
 
         while aborted and retry_passes < MAX_RETRY_PASSES:
-            left = CHAIN_BUDGET_SECONDS - (time.monotonic() - started)
+            left = chain_budget - (time.monotonic() - started)
             if left < MIN_STEP_BUDGET_SECONDS:
                 logger.warning("chain budget exhausted; no retries")
                 break
@@ -142,7 +151,7 @@ def main() -> dict:
             logger.warning("retry pass %d for missing=%s (budget left %.0fs)",
                            retry_passes, aborted, left)
             time.sleep(RETRY_BACKOFF_SECONDS)
-            more, aborted = run_pass(db, today, budget_for)
+            more, aborted = run_pass(db, today, steps, budget_for)
             # merge: latest record per step wins; keep first-pass errors in history
             by_step = {r.get("step"): r for r in records if r.get("step")}
             for r in more:
@@ -155,12 +164,13 @@ def main() -> dict:
             records = [by_step.get(s["step"], {"step": s["step"], "ok": False,
                                                "skipped": "not_attempted",
                                                "attempts": 0})
-                       for s in STEPS]
+                       for s in steps]
 
         missing = missing()
         ok = not missing
         db.add_event("chain", {
             "chain": CHAIN_NAME, "date": today, "ok": ok,
+            "strategy": db.book,
             "steps": {r.get("step"): {"ok": r.get("ok"), "skipped": r.get("skipped"),
                                       "attempts": r.get("attempts", 1)}
                       for r in records},
