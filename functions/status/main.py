@@ -78,7 +78,7 @@ def main() -> dict:
 
         return {
             "ok": True,
-            "book": db.book,
+            "book_id": db.book,   # which book this view is scoped to
             "system": {"halt": halt_state(db),
                        "last_chain": last_event(db, "chain"),
                        "last_reconcile": last_event(db, "reconcile")},
