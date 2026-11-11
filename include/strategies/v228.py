@@ -20,12 +20,13 @@ from __future__ import annotations
 import math
 
 from trading_common import marketdata
+from trading_common.contracts import market_ctx
 from trading_common.trade_rules import market_open
 
 NAME = "v228"
 
-UNIVERSE = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META",
-            "GOOGL", "AMD", "JPM", "XOM", "LLY", "AVGO"]
+UNIVERSE = ("NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META",
+            "GOOGL", "AMD", "JPM", "XOM", "LLY", "AVGO")
 
 N = 1          # entry lookback (days)
 KVOL = 2.0     # sigma multiplier for the dip threshold
@@ -33,10 +34,10 @@ SEL = 3        # max concurrent positions (1/3 weight each)
 TP_PCT = 10.0  # take-profit vs entry fill
 STOP_PCT = 5.0 # stop-loss vs entry fill
 
-STEPS = [
+STEPS: tuple[dict, ...] = (
     {"step": "decide", "path": "/decide-v228", "timeout": 480, "optional": False},
     {"step": "execute", "path": "/execute-v228", "timeout": 300, "optional": False},
-]
+)
 
 EXPECTED_STEPS = ("decide", "execute")
 
@@ -55,24 +56,28 @@ def _closes(sym: str, need: int = 25) -> list[float]:
 
 
 def fetch() -> dict:
-    """Market context: per-name last price, 1d return through the last
-    completed close, and sigma20 (sample stdev of the last 20 daily
-    returns, ddof=1 — pandas rolling(20).std() semantics, mirroring
-    forward.py _sd20)."""
-    ctx = {}
+    """MarketCtx surface + a per-name quote view (price/ret_1d/sigma20 —
+    sigma20: sample stdev of the last 20 daily returns, ddof=1, pandas
+    rolling(20).std() semantics, mirroring forward.py _sd20)."""
+    quotes: dict[str, dict] = {}
+    prices: dict[str, float] = {}
+    errors: dict[str, str] = {}
     for sym in UNIVERSE:
         try:
             px = _closes(sym)
         except Exception as e:  # noqa: BLE001 - per-symbol degradation
-            ctx[sym] = {"error": str(e)[:120]}
+            errors[sym] = str(e)[:120]
             continue
         price = px[-1]
         ret_1d = px[-1] / px[-2] - 1.0
         rs = [px[k] / px[k - 1] - 1.0 for k in range(len(px) - 20, len(px))]
         mu = sum(rs) / len(rs)
         sigma20 = (sum((r - mu) ** 2 for r in rs) / (len(rs) - 1)) ** 0.5
-        ctx[sym] = {"price": price, "ret_1d": ret_1d, "sigma20": sigma20}
-    return {"v228": True, "stocks": ctx}
+        quotes[sym] = {"price": price, "ret_1d": ret_1d, "sigma20": sigma20}
+        prices[sym] = price
+    ctx = market_ctx(prices, errors)
+    ctx["stocks"] = quotes
+    return ctx
 
 
 def build_decision(book: dict, ctx: dict, now=None) -> dict:

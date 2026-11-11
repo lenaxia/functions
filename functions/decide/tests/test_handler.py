@@ -4,8 +4,15 @@ class StubStrategy:
     """Test seam: strategy registry stub (fetch -> ctx, build -> decision)."""
 
     def __init__(self, decision, ctx=None):
-        self.decision = decision
-        self.ctx = ctx or {"stub": True}
+        base = {"market_open": True, "exits": [], "entries": [],
+                "today": "2026-01-01", "now_utc": "2026-01-01T00:00:00+00:00",
+                "strategy": "stub",
+                "account": {"cash": 0.0, "equity": 0.0, "positions_held": 0}}
+        base.update(decision or {})
+        self.decision = base
+        cbase = {"prices": {}, "errors": {}, "as_of": "2026-01-01T00:00:00+00:00"}
+        cbase.update(ctx or {})
+        self.ctx = cbase
         self.BRACKET = {"tp_pct": 15.0, "stop_pct": 5.0}
 
     def fetch(self):
@@ -234,10 +241,8 @@ class TestDecideHandler:
         _patch_strategy(monkeypatch, decide, {
             "market_open": True, "account": {"cash": 25000.0},
             "exits": [], "entries": []},
-            ctx={"stocks": [{"sym": "NVDA", "price": 210.0},
-                            {"sym": "HELD", "price": 51.0},
-                            {"sym": "AMD", "price": 100.0},
-                            {"sym": "SPY", "price": 500.0}]})
+            ctx={"prices": {"NVDA": 210.0, "HELD": 51.0,
+                            "AMD": 100.0, "SPY": 500.0}})
         monkeypatch.setattr(
             decide, "trading_gates",
             lambda dec, debate, trades: (

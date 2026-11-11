@@ -21,6 +21,12 @@ from datetime import datetime, timezone
 from trading_common.db import TradingDB
 from trading_common import alpaca as ap
 from trading_common import gitstate, trade_rules
+from trading_common.contracts import (
+    StrategyError,
+    ensure_decision,
+    ensure_market_ctx,
+    validate_decision_plan_overlap,
+)
 from strategies import for_secret
 from trading_common.secrets import flag
 
@@ -99,16 +105,20 @@ def main() -> dict:
             return out
 
         strat = for_secret()
-        ctx = strat.fetch()
-        decision = strat.build_decision(book, ctx, now=now)
-        stocks = ctx.get("stocks", {})
-        if isinstance(stocks, dict):   # v228-style ctx: {sym: {...}}
-            prices = {s: v.get("price") for s, v in stocks.items()
-                      if isinstance(v, dict) and "error" not in v}
-        else:                          # snapshot-style ctx: [{sym, price}..]
-            prices = {s["sym"]: s.get("price") for s in stocks
-                      if isinstance(s, dict) and "error" not in s}
-        logger.info("data_snapshot %s", ",".join(prices))
+        # contract boundaries: a malformed ctx/decision fails loudly with
+        # the strategy named, never trades on silent defaults
+        ctx = ensure_market_ctx(getattr(strat, "NAME", "?"), strat.fetch())
+        try:
+            decision = ensure_decision(
+                getattr(strat, "NAME", "?"),
+                strat.build_decision(book, ctx, now=now))
+        except StrategyError as e:
+            out = {"ok": False, "error": str(e)[:400], "step": "decide",
+                   "strategy": getattr(strat, "NAME", "?")}
+            db.record_decision(today, "decide", out, status="error")
+            return out
+        prices = dict(ctx["prices"])
+        logger.info("data_snapshot %s", ",".join(sorted(prices)))
 
         debate_row = db.get_decision(today, "debate")
         debate = debate_row["payload"] if debate_row else None
@@ -117,6 +127,9 @@ def main() -> dict:
 
         trades_today = db.trades_today(today)
         exits_ok, gated_entries, gate_log = trading_gates(decision, debate, trades_today)
+        if decision.get("ok") and (gated_entries or exits_ok):
+            plan = dict(decision, exits=exits_ok, entries=gated_entries)
+            validate_decision_plan_overlap(plan, book)
 
         # prices for execute's cap math: every book symbol plus the plan's
         # (execute's diff covers the union of DB book and broker holdings —
