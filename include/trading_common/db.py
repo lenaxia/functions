@@ -44,11 +44,19 @@ def database_url() -> str:
 
 
 class TradingDB:
+    """Book-scoped DB access. Every book-owned table (positions, fills,
+    decisions, events, step_completions) is namespaced by `book`; strategies
+    share one database and cannot see each other's rows. The book comes from
+    the pod's BOOK secret (default 'pilot') unless overridden explicitly —
+    tools that iterate books (reconcile, status) pass book= per iteration."""
+
     def __init__(self, url: str | None = None, *,
+                 book: str | None = None,
                  connect_retries: int = 3, connect_retry_delay: float = 1.0,
                  ensure_schema: bool = True) -> None:
         import psycopg  # psycopg[binary] from requirements.txt
 
+        self.book = (book or secret("BOOK", "pilot")).strip() or "pilot"
         self._closed = False
         last_err: Exception | None = None
         conn = None
@@ -99,29 +107,32 @@ class TradingDB:
     # -- domain helpers ------------------------------------------------------
     def step_done(self, run_date: str, step: str) -> bool:
         row = self.one(
-            "SELECT ts FROM step_completions WHERE run_date = %s AND step = %s",
-            (run_date, step))
+            "SELECT ts FROM step_completions "
+            "WHERE book = %s AND run_date = %s AND step = %s",
+            (self.book, run_date, step))
         return row is not None
 
     def mark_step(self, run_date: str, step: str) -> None:
         self.exec(
-            "INSERT INTO step_completions (run_date, step, ts) VALUES (%s, %s, now()) "
-            "ON CONFLICT (run_date, step) DO UPDATE SET ts = now()",
-            (run_date, step))
+            "INSERT INTO step_completions (book, run_date, step, ts) "
+            "VALUES (%s, %s, %s, now()) "
+            "ON CONFLICT (book, run_date, step) DO UPDATE SET ts = now()",
+            (self.book, run_date, step))
 
     def record_decision(self, run_date: str, step: str,
                         payload: dict, status: str = "ok") -> None:
         self.exec(
-            "INSERT INTO decisions (run_date, step, payload, status, updated_at) "
-            "VALUES (%s, %s, %s::jsonb, %s, now()) "
-            "ON CONFLICT (run_date, step) DO UPDATE SET "
+            "INSERT INTO decisions (book, run_date, step, payload, status, updated_at) "
+            "VALUES (%s, %s, %s, %s::jsonb, %s, now()) "
+            "ON CONFLICT (book, run_date, step) DO UPDATE SET "
             "  payload = EXCLUDED.payload, status = EXCLUDED.status, updated_at = now()",
-            (run_date, step, json.dumps(payload, default=str), status))
+            (self.book, run_date, step, json.dumps(payload, default=str), status))
 
     def get_decision(self, run_date: str, step: str) -> dict | None:
         row = self.one(
-            "SELECT payload, status FROM decisions WHERE run_date = %s AND step = %s",
-            (run_date, step))
+            "SELECT payload, status FROM decisions "
+            "WHERE book = %s AND run_date = %s AND step = %s",
+            (self.book, run_date, step))
         if row is None:
             return None
         payload = row[0]
@@ -131,8 +142,9 @@ class TradingDB:
 
     def add_event(self, type_: str, detail: dict) -> None:
         self.exec(
-            "INSERT INTO events (ts, type, detail) VALUES (now(), %s, %s::jsonb)",
-            (type_, json.dumps(detail, default=str)))
+            "INSERT INTO events (book, ts, type, detail) "
+            "VALUES (%s, now(), %s, %s::jsonb)",
+            (self.book, type_, json.dumps(detail, default=str)))
 
     def upsert_equity(self, strategy: str, as_of: str, equity: float) -> None:
         self.exec(
@@ -147,18 +159,22 @@ class TradingDB:
         return [(r[0], float(r[1])) for r in rows]
 
     def positions(self) -> dict[str, dict]:
-        rows = self.all("SELECT symbol, qty, entry FROM positions WHERE qty > 0")
+        rows = self.all("SELECT symbol, qty, entry FROM positions "
+                        "WHERE book = %s AND qty > 0", (self.book,))
         return {r[0]: {"qty": int(r[1]), "entry": float(r[2])} for r in rows}
 
     def set_positions(self, positions: dict[str, dict]) -> None:
-        """Replace the whole book (used by seed / shadow re-sync)."""
-        self.exec("DELETE FROM positions")
+        """Replace this book's positions (used by seed / shadow re-sync /
+        broker-truth sync). Other books are untouched."""
+        self.exec("DELETE FROM positions WHERE book = %s", (self.book,))
         for sym, p in sorted((positions or {}).items()):
             if int(p.get("qty") or 0) > 0:
                 self.exec(
-                    "INSERT INTO positions (symbol, qty, entry) VALUES (%s, %s, %s) "
-                    "ON CONFLICT (symbol) DO UPDATE SET qty = EXCLUDED.qty, entry = EXCLUDED.entry",
-                    (sym.upper(), int(p["qty"]), float(p.get("entry") or 0.0)))
+                    "INSERT INTO positions (book, symbol, qty, entry) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (book, symbol) DO UPDATE SET "
+                    "qty = EXCLUDED.qty, entry = EXCLUDED.entry",
+                    (self.book, sym.upper(), int(p["qty"]), float(p.get("entry") or 0.0)))
 
     def record_fill(self, symbol: str, side: str, qty: int,
                     price: float | None, assumed_price: float | None,
@@ -167,14 +183,16 @@ class TradingDB:
         if price and assumed_price:
             slip = round((float(price) / float(assumed_price) - 1.0) * 10000.0, 2)
         self.exec(
-            "INSERT INTO fills (ts, symbol, side, qty, price, assumed_price, "
-            "slippage_bps, note, shadow) VALUES (now(), %s, %s, %s, %s, %s, %s, %s, %s)",
-            (symbol, side, int(qty), price, assumed_price, slip, note, shadow))
+            "INSERT INTO fills (book, ts, symbol, side, qty, price, assumed_price, "
+            "slippage_bps, note, shadow) "
+            "VALUES (%s, now(), %s, %s, %s, %s, %s, %s, %s, %s)",
+            (self.book, symbol, side, int(qty), price, assumed_price, slip, note, shadow))
 
     def trades_today(self, run_date: str) -> int:
         row = self.one(
-            "SELECT count(*) FROM fills WHERE ts::date::text = %s AND shadow = false",
-            (run_date,))
+            "SELECT count(*) FROM fills WHERE book = %s "
+            "AND ts::date::text = %s AND shadow = false",
+            (self.book, run_date))
         return int(row[0]) if row else 0
 
 

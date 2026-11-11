@@ -100,7 +100,12 @@ def journal(run_date: str, step: str, payload: dict) -> bool:
     if not token:
         _LOG.warning("GITHUB_TOKEN not set; shadow journal skipped")
         return False
-    path = "shadow/%s/%s.json" % (run_date, step)
+    # per-book namespace (shadow/<book>/<date>/<step>.json); the legacy
+    # pilot layout (shadow/<date>/) is kept for backward compatibility with
+    # the existing mirror so old paths never move under us.
+    book = secret("BOOK", "pilot").strip() or "pilot"
+    prefix = "" if book == "pilot" else book + "/"
+    path = "shadow/%s%s/%s.json" % (prefix, run_date, step)
     url = "https://api.github.com/repos/%s/contents/%s" % (REPO, path)
     body = json.dumps({
         "step": step,

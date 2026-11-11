@@ -40,12 +40,12 @@ logger = logging.getLogger(__name__)
 def halt_state(db: TradingDB) -> dict | None:
     """Latest halt_set without a halt_cleared (events table)."""
     cleared = db.one(
-        "SELECT id FROM events WHERE type = 'halt_cleared' "
-        "ORDER BY id DESC LIMIT 1")
+        "SELECT id FROM events WHERE book = %s AND type = 'halt_cleared' "
+        "ORDER BY id DESC LIMIT 1", (db.book,))
     cleared_id = cleared[0] if cleared else None
     latest = db.one(
-        "SELECT id, detail FROM events WHERE type = 'halt_set' AND id > COALESCE(%s, 0) "
-        "ORDER BY id DESC LIMIT 1", (cleared_id or 0,))
+        "SELECT id, detail FROM events WHERE book = %s AND type = 'halt_set' AND id > COALESCE(%s, 0) "
+        "ORDER BY id DESC LIMIT 1", (db.book, cleared_id or 0))
     if latest is None:
         return None
     import json

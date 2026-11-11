@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 def halt_state(db: TradingDB) -> dict:
     row = db.one(
-        "SELECT type FROM events WHERE type IN ('halt_set','halt_cleared') "
-        "ORDER BY id DESC LIMIT 1")
+        "SELECT type FROM events WHERE book = %s AND type IN ('halt_set','halt_cleared') "
+        "ORDER BY id DESC LIMIT 1", (db.book,))
     halted = bool(row and row[0] == "halt_set")
     return {"halted": halted, "gates_open": not halted}
 
@@ -44,14 +44,15 @@ def recent_steps(db: TradingDB, days: int = 7) -> list[dict]:
     since = (datetime.now(timezone.utc) - timedelta(days=days)).date()
     rows = db.all(
         "SELECT run_date, step, ts FROM step_completions "
-        "WHERE run_date >= %s ORDER BY run_date DESC, step", (since,))
+        "WHERE book = %s AND run_date >= %s ORDER BY run_date DESC, step",
+        (db.book, since))
     return [{"date": str(r[0]), "step": r[1], "ts": r[2].isoformat()} for r in rows]
 
 
 def last_event(db: TradingDB, type_: str) -> dict | None:
     row = db.one(
-        "SELECT ts, detail FROM events WHERE type = %s "
-        "ORDER BY id DESC LIMIT 1", (type_,))
+        "SELECT ts, detail FROM events WHERE book = %s AND type = %s "
+        "ORDER BY id DESC LIMIT 1", (db.book, type_,))
     if not row:
         return None
     return {"ts": row[0].isoformat(), "detail": row[1]}
@@ -64,8 +65,9 @@ def main() -> dict:
         positions = db.positions() or {}
         held = {s: p for s, p in positions.items() if (p.get("qty") or 0) > 0}
         exec_row = db.one(
-            "SELECT run_date, payload FROM decisions WHERE step = 'execute' "
-            "ORDER BY run_date DESC LIMIT 1")
+            "SELECT run_date, payload FROM decisions "
+            "WHERE book = %s AND step = 'execute' "
+            "ORDER BY run_date DESC LIMIT 1", (db.book,))
         acct = {}
         if exec_row:
             p = exec_row[1] or {}
@@ -76,6 +78,7 @@ def main() -> dict:
 
         return {
             "ok": True,
+            "book": db.book,
             "system": {"halt": halt_state(db),
                        "last_chain": last_event(db, "chain"),
                        "last_reconcile": last_event(db, "reconcile")},
@@ -88,7 +91,8 @@ def main() -> dict:
             "recent_events": [
                 {"id": r[0], "ts": r[1].isoformat(), "type": r[2]}
                 for r in db.all(
-                    "SELECT id, ts, type FROM events ORDER BY id DESC LIMIT 10")],
+                    "SELECT id, ts, type FROM events WHERE book = %s "
+                    "ORDER BY id DESC LIMIT 10", (db.book,))],
             "now_utc": datetime.now(timezone.utc).isoformat(),
         }
     finally:
