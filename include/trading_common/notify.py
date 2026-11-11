@@ -56,6 +56,7 @@ def alert(alertname: str, summary: str, description: str = "",
             "severity": severity,
             "source": "trading",
             "job": "trading-chain",
+            "book": secret("BOOK", "pilot").strip() or "pilot",
         },
         "annotations": {
             "summary": summary,

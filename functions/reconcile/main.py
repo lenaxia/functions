@@ -28,12 +28,17 @@ from datetime import datetime, timezone
 from trading_common import alpaca
 from trading_common.db import TradingDB, utc_today
 from trading_common.notify import alert
+from trading_common.secrets import secret
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REQUIRED_MORNING = ("debate", "decide", "execute")
-REQUIRED_AFTERNOON = ("score",)
+# expected daily steps for THIS book (its secret's EXPECTED_STEPS) — the
+# v228 book runs decide/execute only, pilot runs the full chain
+EXPECTED_STEPS = tuple(s.strip() for s in
+                       secret("EXPECTED_STEPS",
+                              "debate,decide,execute,score").split(",")
+                       if s.strip())
 QTY_TOLERANCE = 1e-6
 CASH_TOLERANCE = 1.0
 
@@ -66,7 +71,7 @@ def diff_book(db_pos: dict[str, float], db_cash: float, acct: dict) -> dict:
 
 
 # when a step becomes "due" (UTC hour) — before that, absence is not a gap
-DUE_HOUR = {"debate": 14, "decide": 14, "execute": 14, "score": 22}
+DUE_HOUR = {"debate": 14, "decide": 14, "execute": 14, "score": 22, "digest": 23}
 
 
 def schedule_gap(db: TradingDB, today: str) -> list[str]:
@@ -74,8 +79,8 @@ def schedule_gap(db: TradingDB, today: str) -> list[str]:
     if now.weekday() >= 5:  # Sat/Sun: no chains scheduled
         return []
     missing = []
-    for s in REQUIRED_MORNING + REQUIRED_AFTERNOON:
-        if now.hour >= DUE_HOUR[s] and not db.step_done(today, s):
+    for s in EXPECTED_STEPS:
+        if now.hour >= DUE_HOUR.get(s, 23) and not db.step_done(today, s):
             missing.append(s)
     return missing
 

@@ -12,7 +12,8 @@ sys.path.insert(0, str(_FUNCTION_DIR))
 class FakeDB:
     """In-memory TradingDB covering the read paths status/ uses."""
 
-    def __init__(self):
+    def __init__(self, book: str = "pilot"):
+        self.book = book
         self.decisions = {}
         self.steps = set()
         self.events = []          # (id, ts, type, detail)
