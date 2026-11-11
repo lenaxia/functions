@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from strategies import for_secret
 from trading_common import alpaca as ap
 from trading_common import broker, gitstate
 from trading_common.db import TradingDB
@@ -179,7 +180,7 @@ def place_orders(db: TradingDB, api: ap.Alpaca, orders: list[dict], result: dict
         ref = None
         if o["side"] == "buy":
             ref = o.get("assumed_price")
-        body = ap.bracket_body(body, o["symbol"], ref)
+        body = ap.bracket_body(body, o["symbol"], ref, **_bracket())
         resp = api.api("POST", "/orders", body)
         placed.append({**o, "bracket": body.get("order_class") == "bracket",
                        "ok": "_error" not in resp, "id": resp.get("id"),
@@ -244,6 +245,13 @@ def _sync_book_from_broker(db: TradingDB, api: ap.Alpaca, result: dict) -> None:
     except Exception as e:  # noqa: BLE001
         result["broker_sync"] = "failed: %s" % str(e)[:120]
         logger.warning("broker-truth sync failed: %s", e)
+
+
+def _bracket() -> dict:
+    """This book's bracket params from its strategy registry entry."""
+    b = getattr(for_secret(), "BRACKET", None) or {}
+    return {"tp_pct": float(b.get("tp_pct", 15.0)),
+            "stop_pct": float(b.get("stop_pct", 5.0))}
 
 
 def cancel_open_legs(api: ap.Alpaca, symbol: str) -> int:

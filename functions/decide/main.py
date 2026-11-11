@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 
 from trading_common.db import TradingDB
 from trading_common import alpaca as ap
-from trading_common import gitstate, marketdata, trade_rules
+from trading_common import gitstate, trade_rules
+from strategies import for_secret
 from trading_common.secrets import flag
 
 logging.basicConfig(level=logging.INFO)
@@ -97,10 +98,16 @@ def main() -> dict:
             db.record_decision(today, "decide", out, status="error")
             return out
 
-        snap = marketdata.snapshot()
-        decision = trade_rules.build_decision(book, snap, now=now)
-        prices = {s["sym"]: s.get("price") for s in snap.get("stocks", [])
-                  if isinstance(s, dict) and "error" not in s}
+        strat = for_secret()
+        ctx = strat.fetch()
+        decision = strat.build_decision(book, ctx, now=now)
+        stocks = ctx.get("stocks", {})
+        if isinstance(stocks, dict):   # v228-style ctx: {sym: {...}}
+            prices = {s: v.get("price") for s, v in stocks.items()
+                      if isinstance(v, dict) and "error" not in v}
+        else:                          # snapshot-style ctx: [{sym, price}..]
+            prices = {s["sym"]: s.get("price") for s in stocks
+                      if isinstance(s, dict) and "error" not in s}
         logger.info("data_snapshot %s", ",".join(prices))
 
         debate_row = db.get_decision(today, "debate")
