@@ -248,10 +248,13 @@ def _sync_book_from_broker(db: TradingDB, api: ap.Alpaca, result: dict) -> None:
 
 
 def _bracket() -> dict:
-    """This book's bracket params from its strategy registry entry."""
+    """This book's bracket params from its strategy registry entry.
+    Registry validation bounds them at import; clamp defensively anyway —
+    execute runs after a possible registry change mid-flight."""
     b = getattr(for_secret(), "BRACKET", None) or {}
-    return {"tp_pct": float(b.get("tp_pct", 15.0)),
-            "stop_pct": float(b.get("stop_pct", 5.0))}
+    tp = min(max(float(b.get("tp_pct", 15.0)), 0.1), 100.0)
+    stop = min(max(float(b.get("stop_pct", 5.0)), 0.1), 100.0)
+    return {"tp_pct": tp, "stop_pct": stop}
 
 
 def cancel_open_legs(api: ap.Alpaca, symbol: str) -> int:
