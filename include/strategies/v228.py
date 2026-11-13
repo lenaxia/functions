@@ -1,8 +1,7 @@
 """v228 — vol-scaled mean reversion (lab2 V228, verbatim port of
-trading_common/forward.py meanrev_vol_rows into live decision shape).
+trading_common/forward.py meanrev_vol_rules into live decision shape).
 
-Rules (unchanged from the lab + forward replay):
-  - universe: the EW-12 research names
+Rules (exit/entry/thresholds unchanged from the lab + forward replay):
   - exit: close vs entry fill: +10% TP / -5% stop  (bracket-native)
   - entry: worst-first among names whose n=1-day return (through t-1)
     <= -kvol(2.0) * sigma20 * sqrt(n), up to sel=3 names at 1/3 weight each
@@ -10,8 +9,20 @@ Rules (unchanged from the lab + forward replay):
     (per-order 30k cap will trim the third slot — known live-parity
     divergence, see the lab live-parity harness)
 
+Universe (changed 2026-11-13, owner decision "match the other alpaca book"):
+  the pilot watchlist (~114 liquid names incl. momentum extras) instead of
+  the EW-12 research set. Two consequences to keep in mind:
+  - VALIDATION SCOPE: the lab gauntlet and the fwd:V228 forward tracker
+    validated/measured V228 on the EW-12 only. The wide-universe config is
+    a NEW variant with no backtest behind it — roughly 10x the candidate
+    rate, and worst-first slot fills will systematically favor the highest
+    sigma20 names (SMCI/MU/TSLA-type). Treat the live record as the
+    experiment, not a continuation of the +16.2% forward curve.
+  - PARITY: fwd:V228 in the tracker still replays the EW-12, so the live
+    v228 book and its forward line are no longer the same strategy.
+
 Differences from the pilot chain, by design:
-  - no debate/LLM veto step (the +16.2% forward record never had one —
+  - no debate/LLM veto step (the forward record never had one —
     adding it would break the A/B)
   - fetches its own 40d closes per universe name (sigma20 needs 21+)
 """
@@ -25,8 +36,8 @@ from trading_common.trade_rules import market_open
 
 NAME = "v228"
 
-UNIVERSE = ("NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META",
-            "GOOGL", "AMD", "JPM", "XOM", "LLY", "AVGO")
+# Same watchlist the pilot book sweeps every morning (universe.txt).
+UNIVERSE = tuple(sorted(set(marketdata.universe())))
 
 N = 1          # entry lookback (days)
 KVOL = 2.0     # sigma multiplier for the dip threshold

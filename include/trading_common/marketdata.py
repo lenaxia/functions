@@ -30,6 +30,13 @@ def _universe() -> list[str]:
     return [t.upper() for t in out]
 
 
+def universe() -> list[str]:
+    """Public accessor for the pilot watchlist (~123 liquid names) — the
+    single source of truth shared by every strategy that wants to 'watch
+    what the other book watches' (e.g. v228 since 2026-11-13)."""
+    return _universe()
+
+
 def get(url: str, timeout: int = 12):
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
