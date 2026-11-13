@@ -9,17 +9,14 @@ Rules (exit/entry/thresholds unchanged from the lab + forward replay):
     (per-order 30k cap will trim the third slot — known live-parity
     divergence, see the lab live-parity harness)
 
-Universe (changed 2026-11-13, owner decision "match the other alpaca book"):
-  the pilot watchlist (~114 liquid names incl. momentum extras) instead of
-  the EW-12 research set. Two consequences to keep in mind:
-  - VALIDATION SCOPE: the lab gauntlet and the fwd:V228 forward tracker
-    validated/measured V228 on the EW-12 only. The wide-universe config is
-    a NEW variant with no backtest behind it — roughly 10x the candidate
-    rate, and worst-first slot fills will systematically favor the highest
-    sigma20 names (SMCI/MU/TSLA-type). Treat the live record as the
-    experiment, not a continuation of the +16.2% forward curve.
-  - PARITY: fwd:V228 in the tracker still replays the EW-12, so the live
-    v228 book and its forward line are no longer the same strategy.
+Universe (history): EW-12 research set -> pilot watchlist (0.4.1, 2026-11-13)
+-> back to EW-12 (0.4.2, 2026-11-13). The wide-universe experiment lasted one
+session (no trades) and was reverted after the pre-registered universe lab
+(ai-trading/lab4): wide V228 full-window Sharpe 0.42 vs 0.72 for EW-12, H2
+Sharpe -0.10 vs 2.87 — worst-first dip-buying over ~114 names fills slots
+with ABT/CVS/T-type structural dips (no upward drift to revert into), while
+the lab-validated edge lives in 2σ dips of uptrending mega-caps. fwd:V228
+replays the EW-12; live and forward line are the same strategy again.
 
 Differences from the pilot chain, by design:
   - no debate/LLM veto step (the forward record never had one —
@@ -36,8 +33,11 @@ from trading_common.trade_rules import market_open
 
 NAME = "v228"
 
-# Same watchlist the pilot book sweeps every morning (universe.txt).
-UNIVERSE = tuple(sorted(set(marketdata.universe())))
+# EW-12 research set — the universe the lab gauntlet, the forward tracker
+# and the 0.4.2 revert decision all refer to. Universe-selection experiments
+# live in ai-trading/lab4; do not widen without a pre-registered lab result.
+UNIVERSE = ("NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "META",
+            "GOOGL", "AMD", "JPM", "XOM", "LLY", "AVGO")
 
 N = 1          # entry lookback (days)
 KVOL = 2.0     # sigma multiplier for the dip threshold
