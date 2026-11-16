@@ -108,3 +108,53 @@ class TestV228:
             "AMD": {"price": 100.0, "ret_1d": -0.05, "sigma20": 0.01}}}
         d = v228.build_decision(_book(cash=99000.0), ctx)
         assert [e["symbol"] for e in d["entries"]] == ["AMD"]
+
+
+class TestV228ClosesCompletedBar:
+    """v228._closes must ignore the in-progress session bar: Yahoo appends
+    today's partial bar while the market is open, which would turn ret_1d
+    into a minutes-old intraday move measured against a -2*sigma20 DAILY
+    threshold (entry-blind live strategy; see lab4 + 2026-11-16 fix)."""
+
+    def _fake_chart(self, today):
+        import datetime as dt
+        ts = [int((today - dt.timedelta(days=3)).timestamp()),
+              int((today - dt.timedelta(days=2)).timestamp()),
+              int(today.replace(hour=14, minute=30).timestamp())]
+        return {"chart": {"result": [{"timestamp": ts,
+                                      "indicators": {"quote": [{"close": [100.0, 110.0, 120.0]}]}}]}}
+
+    def _patch(self, monkeypatch, today, fake):
+        import strategies.v228 as m
+        monkeypatch.setattr(m.marketdata, "get", lambda url, timeout=12: fake)
+        return m
+
+    def test_drops_partial_bar_when_open(self, monkeypatch):
+        import datetime as dt
+        from trading_common.trade_rules import market_open
+        today = None
+        for h in range(9, 21):
+            cand = dt.datetime.now(dt.timezone.utc).replace(hour=h, minute=0)
+            if market_open(cand):
+                today = cand
+                break
+        if today is None:  # defensive: weekend-adjacent CI runs
+            import pytest
+            pytest.skip("no market-open hour findable from CI clock")
+        m = self._patch(monkeypatch, today, self._fake_chart(today))
+        assert m._closes("NVDA", need=2, now=today) == [100.0, 110.0]
+
+    def test_keeps_completed_bar_when_closed(self, monkeypatch):
+        import datetime as dt
+        from trading_common.trade_rules import market_open
+        after = None
+        for h in range(23, 2, -1):
+            cand = dt.datetime.now(dt.timezone.utc).replace(hour=h, minute=0)
+            if not market_open(cand):
+                after = cand
+                break
+        if after is None:
+            import pytest
+            pytest.skip("no market-closed hour findable from CI clock")
+        m = self._patch(monkeypatch, after, self._fake_chart(after))
+        assert m._closes("NVDA", need=2, now=after) == [100.0, 110.0, 120.0]

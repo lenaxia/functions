@@ -26,6 +26,7 @@ Differences from the pilot chain, by design:
 from __future__ import annotations
 
 import math
+import datetime as dt
 
 from trading_common import marketdata
 from trading_common.contracts import market_ctx
@@ -55,12 +56,27 @@ EXPECTED_STEPS = ("decide", "execute")
 BRACKET = {"tp_pct": TP_PCT, "stop_pct": STOP_PCT}
 
 
-def _closes(sym: str, need: int = 25) -> list[float]:
-    """Daily closes, oldest-first, at least `need` of them."""
+def _closes(sym: str, need: int = 25, now: dt.datetime | None = None) -> list[float]:
+    """Daily closes, oldest-first, at least `need` of them.
+
+    Completed closes only: while the market is open Yahoo appends the
+    in-progress session as the last bar, which turns ret_1d into a
+    minutes-old intraday move measured against a -2*sigma20 DAILY threshold
+    (silently unsatisfiable — v228 ran entry-blind for its first week for
+    exactly this reason once the chain moved inside market hours). Signal
+    semantics must match the forward replay: last COMPLETED close-to-close.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
     d = marketdata.get(
         "https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1d&range=3mo" % sym)
     res = d["chart"]["result"][0]
-    closes = [c for c in (res["indicators"]["quote"][0].get("close") or []) if c is not None]
+    bars = [(t, c) for t, c in zip(res.get("timestamp") or [],
+                                   (res["indicators"]["quote"][0].get("close") or []))
+            if c is not None]
+    if market_open(now) and bars and dt.datetime.fromtimestamp(
+            bars[-1][0], dt.timezone.utc).date() == now.date():
+        bars = bars[:-1]
+    closes = [c for _, c in bars]
     if len(closes) < need:
         raise ValueError("%s: only %d closes" % (sym, len(closes)))
     return closes
@@ -92,7 +108,6 @@ def fetch() -> dict:
 
 
 def build_decision(book: dict, ctx: dict, now=None) -> dict:
-    import datetime as dt
 
     now = now or dt.datetime.now(dt.timezone.utc)
     today = now.strftime("%Y-%m-%d")
